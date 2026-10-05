@@ -210,6 +210,11 @@ python main.py ingest-email --provider gmail --thread-id "GMAIL_THREAD_ID"
 python main.py ingest-email --provider outlook --thread-id "OUTLOOK_CONVERSATION_ID"
 # Or using generic CLI syntax:
 python main.py ingest --source email --provider gmail --thread-id "GMAIL_THREAD_ID"
+
+# Ingest an RSS or Atom feed:
+python main.py ingest-rss "https://example.com/feed.xml"
+# Or using generic CLI syntax:
+python main.py ingest --source rss --url "https://example.com/feed.xml"
 ```
 
 ---
@@ -308,6 +313,33 @@ The Email connector ingests full email threads and conversations from Gmail and 
 
 ---
 
+## RSS / Atom Source Connector (`sources/rss_source.py`)
+
+The RSS connector ingests articles and posts from RSS 2.0 and Atom syndication feeds into Aurora's Obsidian vault.
+
+### Capabilities:
+- **RSS 2.0 & Atom Feed Parsing**: Powered by `feedparser`, extracting feed-level metadata (feed title, feed URL, description, language) and item-level metadata (title, link, GUID/id, published/updated dates, author, summary, content, tags/categories).
+- **Intelligent Article Content Resolution**:
+  - **Case A (Full Content in Feed)**: When feeds supply full article HTML/text, it is converted directly to clean Markdown via `markdownify`.
+  - **Case B (Summary / Excerpt Only)**: When feeds only provide a teaser or summary, fetches the article URL and uses `trafilatura` to extract the full article body.
+  - **Case C (Fallback)**: If article URL is unavailable or full text extraction fails, gracefully falls back to the feed summary without failing note ingestion.
+- **Obsidian Note Generation**: Notes are written to `${AURORA_VAULT_PATH}/Ingested/RSS/<note>.md` with YAML frontmatter, an H1 header matching the title, and an attribution blockquote (`> **Source**: [title](url) · **Feed**: [feed](url) · **Author**: ... · **Published**: ...`).
+- **Image Discovery & Attachment Handling**: Scans article HTML for images, filters out tracking pixels (`1x1`, `pixel.gif`, analytics badges), downloads article images into `${AURORA_VAULT_PATH}/Attachments/Ingested/` with collision-safe naming, and embeds them via `![[filename.ext]]`.
+- **URL Normalization**: Normalizes feed and article URLs by lowercasing scheme/host, stripping fragments (`#section`), removing default ports, and trimming trailing slashes while preserving necessary query parameters.
+- **Category & Tag Sanitization**: Extracts feed and article tags/categories, sanitizes them to safe kebab-case Obsidian tags, and enforces the `rss` and `ingested` tags.
+- **Deduplication & In-Place Updates**:
+  - `source_id`: Prefers `rss:<guid>` if a GUID exists, falls back to `rss:url:<normalized_url>`, or stable feed URL + content hash fallback.
+  - `content_hash`: SHA-256 of item title + body content + image digests.
+  - **Unchanged**: Skips re-ingestion if item content remains identical.
+  - **Changed**: Overwrites the existing note in-place in `${AURORA_VAULT_PATH}/Ingested/RSS/` and updates tracking records without creating duplicate notes.
+- **Batch Processing & Fault Isolation**: Feeds containing multiple items are processed independently. An error in one article does not abort the remaining items. CLI reports discovered, created, skipped, updated, and failed item counts.
+
+### Known Limitations:
+- **Paywalled / Bot-Protected Articles**: When expanding summary-only items, sites behind Cloudflare challenge pages or subscription paywalls cannot be fetched by `trafilatura` (gracefully falls back to feed summary).
+- **Podcast Enclosures**: Audio enclosures in podcast RSS feeds are not downloaded as local media attachments; episode show notes and metadata are captured as standard notes.
+
+---
+
 ## Running Tests
 
 Run the complete test suite with `pytest`:
@@ -316,7 +348,7 @@ Run the complete test suite with `pytest`:
 pytest -v
 ```
 
-All 93 unit and integration tests verify:
+All 117 unit and integration tests verify:
 - Vault path expansion and validation
 - Sanitization and 80-character title truncation
 - Frontmatter generation with `ingested` tag enforcement
@@ -365,6 +397,22 @@ All 93 unit and integration tests verify:
 - Email thread deduplication and in-place update lifecycle on new replies
 - Email attachment collision resolution and embed reference updating
 - Email CLI commands (`ingest-email --provider gmail|outlook` and `ingest --source email`)
+- RSS connector registration and URL scheme validation
+- RSS 2.0 and Atom feed parsing with feedparser
+- RSS metadata extraction (feed title, feed URL, author, published date)
+- RSS content cases: Case A (full content), Case B (trafilatura expansion), Case C (summary fallback)
+- RSS image downloading and tracking pixel filtering
+- RSS stable identity derivation (GUID, normalized URL, and fallback hash)
+- RSS category and tag sanitization
+- RSS note generation under `Ingested/RSS/`
+- RSS deduplication and in-place update lifecycle
+- RSS empty, invalid, and malformed feed error handling
+- RSS network and HTTP error handling (404, 500, timeouts)
+- RSS batch feed processing with partial failure isolation
+- RSS CLI commands (`ingest-rss` and `ingest --source rss --url`)
+- RSS long summary without content field triggering trafilatura extraction
+- RSS short content field using feed content without external network requests
+- RSS duplicate image basename resolution with unique filenames and embed synchronization
 
 ---
 
@@ -406,8 +454,18 @@ All 93 unit and integration tests verify:
   - [x] Notes saved to `Ingested/Email/` with YAML frontmatter
   - [x] Thread-based SHA-256 deduplication & in-place note updates
   - [x] CLI `ingest-email` and `ingest --source email` commands
-- [x] 100% test pass rate across all 93 tests.
+- [x] **RSS / Atom Source Connector** (`sources/rss_source.py`):
+  - [x] RSS 2.0 and Atom feed parsing with `feedparser`
+  - [x] Feed and item metadata extraction (title, link, GUID, dates, author, summary, tags)
+  - [x] Full content vs. `trafilatura` summary expansion vs. summary fallback
+  - [x] Image downloading to `Attachments/Ingested/` with tracking pixel filtering
+  - [x] Notes saved to `Ingested/RSS/` with frontmatter and attribution blockquotes
+  - [x] Stable identity (`rss:<guid>` / `rss:url:<normalized_url>`) & SHA-256 deduplication lifecycle
+  - [x] Independent item batch processing with failure isolation
+  - [x] CLI `ingest-rss` and `ingest --source rss --url` commands
+- [x] 100% test pass rate across all 117 tests.
 
 ### Next Connectors to Implement:
-1. **Tier 2 Connectors**: RSS, Notion, Google Keep, Readwise.
+1. **Tier 2 Connectors**: Notion, Google Keep, Readwise.
 2. **Tier 3 Connectors**: Twitter/X, Reddit, Slack/Discord/Telegram, Audio Whisper transcription, OCR screenshots, GitHub.
+

@@ -185,6 +185,21 @@ def build_attribution_block(note: MarkdownNote) -> str:
             meta_parts.append(f"**Published**: {date_str}")
         if meta_parts:
             lines.append(f"> {' · '.join(meta_parts)}")
+    elif note.source == "rss":
+        feed_title = note.extra_metadata.get("feed_title", "")
+        feed_url = note.extra_metadata.get("feed_url", "")
+        lines.append(f"> **Source**: {source_ref}")
+        meta_parts = []
+        if feed_title:
+            feed_ref = f"[{feed_title}]({feed_url})" if feed_url else feed_title
+            meta_parts.append(f"**Feed**: {feed_ref}")
+        if note.author:
+            meta_parts.append(f"**Author**: {note.author}")
+        date_str = extract_date_prefix(note.date)
+        if date_str:
+            meta_parts.append(f"**Published**: {date_str}")
+        if meta_parts:
+            lines.append(f"> {' · '.join(meta_parts)}")
     else:
         # Generic attribution block
         meta_parts = [f"**Source**: {source_ref}"]
@@ -352,7 +367,7 @@ def write_note_to_vault(
     saved_attachments: List[str] = []
     if attachments:
         att_folder = config.attachment_folder if config else DEFAULT_ATTACHMENT_FOLDER
-        for att in attachments:
+        for i, att in enumerate(attachments):
             orig_raw_name = Path(att.filename).name
 
             # Determine overwrite target if updating an existing note
@@ -373,7 +388,9 @@ def write_note_to_vault(
             saved_attachments.append(saved_name)
 
             # Update note.attachments list: replace original reference with saved name
-            if orig_raw_name in note.attachments:
+            if i < len(note.attachments) and note.attachments[i] == orig_raw_name:
+                note.attachments[i] = saved_name
+            elif orig_raw_name in note.attachments:
                 idx = note.attachments.index(orig_raw_name)
                 note.attachments[idx] = saved_name
             elif saved_name not in note.attachments:

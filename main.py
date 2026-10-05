@@ -216,6 +216,12 @@ def create_parser() -> argparse.ArgumentParser:
         help="Specific thread ID (Gmail) or conversation ID (Outlook) to ingest",
     )
 
+    # Command: ingest-rss
+    ingest_rss_parser = subparsers.add_parser(
+        "ingest-rss", help="Shortcut to ingest an RSS or Atom feed by URL"
+    )
+    ingest_rss_parser.add_argument("url", help="URL of the RSS or Atom feed to ingest")
+
     # Command: status
     status_parser = subparsers.add_parser("status", help="Show deduplication tracker status")
     status_parser.add_argument(
@@ -280,7 +286,7 @@ async def async_main(args: argparse.Namespace) -> int:
                 print(f"  ... and {len(records) - 20} more records.")
             return 0
 
-        elif args.command in {"ingest", "ingest-web", "ingest-youtube", "ingest-email"}:
+        elif args.command in {"ingest", "ingest-web", "ingest-youtube", "ingest-email", "ingest-rss"}:
             config.validate()
             pipeline = IngestionPipeline(config=config, tracker=tracker)
             if args.command == "ingest-email":
@@ -289,6 +295,8 @@ async def async_main(args: argparse.Namespace) -> int:
                 source_name = "youtube"
             elif args.command == "ingest-web":
                 source_name = "web"
+            elif args.command == "ingest-rss":
+                source_name = "rss"
             else:
                 source_name = getattr(args, "source", None) or "web"
 
