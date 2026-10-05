@@ -52,15 +52,27 @@ aurora-ingestion/
 ├── exceptions.py         # Custom exception hierarchy
 ├── sources/
 │   ├── __init__.py       # Sources package export
-│   └── base.py           # BaseSource abstract interface, SourceRegistry, async_retry
+│   ├── base.py           # BaseSource abstract interface, SourceRegistry, async_retry
+│   ├── email_source.py   # Email thread connector (Gmail, Outlook)
+│   ├── notion_source.py  # Notion page connector
+│   ├── pdf_source.py     # PDF document connector
+│   ├── rss_source.py     # RSS/Atom syndication connector
+│   ├── web_source.py     # Web article connector
+│   └── youtube_source.py # YouTube video connector
 ├── tests/
 │   ├── __init__.py
+│   ├── test_attachments.py # Attachment saving and embed tests
+│   ├── test_cli.py         # CLI argument parser tests
 │   ├── test_config.py      # Vault path & folder configuration tests
 │   ├── test_converter.py   # Sanitization, frontmatter, and writer tests
-│   ├── test_tracker.py     # SQLite tracker lifecycle and deduplication tests
-│   ├── test_attachments.py # Attachment saving and embed tests
+│   ├── test_email_source.py# Email connector tests
+│   ├── test_notion_source.py# Notion connector tests
+│   ├── test_pdf_source.py  # PDF connector tests
 │   ├── test_pipeline.py    # Pipeline orchestration and retry tests
-│   └── test_cli.py         # CLI argument parser tests
+│   ├── test_rss_source.py  # RSS connector tests
+│   ├── test_tracker.py     # SQLite tracker lifecycle and deduplication tests
+│   ├── test_web_source.py  # Web connector tests
+│   └── test_youtube_source.py # YouTube connector tests
 ├── requirements.txt      # Project dependencies
 ├── .env.example          # Environment variable template
 └── README.md             # Service documentation
@@ -215,6 +227,14 @@ python main.py ingest --source email --provider gmail --thread-id "GMAIL_THREAD_
 python main.py ingest-rss "https://example.com/feed.xml"
 # Or using generic CLI syntax:
 python main.py ingest --source rss --url "https://example.com/feed.xml"
+
+# Ingest accessible Notion pages:
+python main.py ingest-notion
+# Ingest a specific Notion page by ID:
+python main.py ingest-notion --page-id "PAGE_ID"
+# Or using generic CLI syntax:
+python main.py ingest --source notion
+python main.py ingest --source notion --page-id "PAGE_ID"
 ```
 
 ---
@@ -340,6 +360,58 @@ The RSS connector ingests articles and posts from RSS 2.0 and Atom syndication f
 
 ---
 
+## Notion Source Connector (`sources/notion_source.py`)
+
+The Notion connector ingests pages and database records accessible to a Notion internal integration token into Aurora's Obsidian vault.
+
+### Capabilities:
+- **Authentication via Integration Token**: Uses the official `notion-client` Python SDK with an internal integration token configured via `NOTION_TOKEN` (or `NOTION_API_KEY`). Tokens are securely handled, never logged, and dependency-injected for testing.
+- **Page Discovery & Search**: Discovers accessible pages via Notion API search (`client.search`), with full cursor-based pagination. Individual pages can also be targeted by ID via `--page-id`.
+- **Target Folder**: Writes notes directly to `${AURORA_VAULT_PATH}/Ingested/Notes/<YYYY-MM-DD>_notion_<title>.md`.
+- **Comprehensive Block-to-Markdown Conversion**:
+  - **Paragraphs**: Text with full inline rich text formatting.
+  - **Headings**: `heading_1` (`#`), `heading_2` (`##`), `heading_3` (`###`).
+  - **Bullet & Numbered Lists**: `bulleted_list_item` (`- item`), `numbered_list_item` (`1. item` with sequential numbering).
+  - **To-Do Checklists**: `to_do` (`- [ ]` / `- [x]`).
+  - **Toggles**: Converted to clean pure Markdown (`### Toggle Title` followed by content) without `<details>` or raw HTML.
+  - **Quotes**: `quote` (`> text` with multi-line support).
+  - **Callouts**: `callout` (`> 💡 text` with emoji icon preservation, without raw HTML).
+  - **Code Blocks**: `code` (fenced code block with preserved language identifier).
+  - **Tables**: `table` / `table_row` rendered as Markdown pipe tables with column alignment and padding.
+  - **Rich Text Formatting**: Bold (`**`), italic (`*`), strikethrough (`~~`), code (`` ` ``), inline math (`$formula$`), and links (`[text](url)`).
+  - **Images & Files**: Downloads images into `${AURORA_VAULT_PATH}/Attachments/Ingested/` with collision disambiguation and embeds them via `![[filename.ext]]`.
+  - **Equations & Bookmarks**: Block math equations (`$$formula$$`) and bookmark/link previews (`[url](url)`).
+  - **Child Pages**: Converted to descriptive Markdown references.
+  - **Unsupported Blocks**: Handled gracefully without aborting note rendering.
+  - **Recursive Children**: Recursively fetches child blocks with pagination support (`client.blocks.children.list`).
+- **Metadata & Attribution**:
+  - Frontmatter: `title`, `date`, `source: "notion"`, `tags: [ingested, notion, ...]`, `ingested_at`, `source_url`, `author`, `last_edited_time`, `page_id`, and `word_count`.
+  - Attribution Block: `> **Source**: [Notion](url) · **Author**: ... · **Last Edited**: ...`.
+- **Deduplication & In-Place Updates**:
+  - `source_id`: `notion:<page_id>`.
+  - `content_hash`: SHA-256 of title + body content + image digests.
+  - **Unchanged**: Skips re-ingestion if `last_edited_time` and content are unchanged.
+  - **Changed**: Overwrites the existing note in-place in `${AURORA_VAULT_PATH}/Ingested/Notes/` and updates tracking records without creating duplicate notes.
+- **Batch Processing & Fault Isolation**: Multi-page search ingestion isolates failures to individual pages, allowing healthy pages to continue processing.
+
+### Setup & Connecting Pages:
+1. Go to [Notion Developers - My Integrations](https://www.notion.so/my-integrations) and create an **Internal Integration**.
+2. Copy the "Internal Integration Secret" and set it in your environment:
+   ```bash
+   export NOTION_TOKEN="secret_..."
+   # Or in .env:
+   # NOTION_TOKEN=secret_...
+   ```
+3. In Notion, open any page or database you want Aurora to ingest, click `...` (Page Menu) → **Connections** / **Add connections**, and select your integration.
+
+### Known Limitations:
+- **Database Rows**: Database rows are ingested as individual page notes per row rather than a single database view.
+- **Complex Relations**: Relation and rollup properties are represented as summarized text rather than bi-directional links.
+- **Comments**: Inline comments and page discussion threads are not ingested.
+- **Synced Blocks**: Notion `synced_block` containers are currently skipped rather than cross-referenced.
+
+---
+
 ## Running Tests
 
 Run the complete test suite with `pytest`:
@@ -348,7 +420,7 @@ Run the complete test suite with `pytest`:
 pytest -v
 ```
 
-All 117 unit and integration tests verify:
+All 152 unit and integration tests verify:
 - Vault path expansion and validation
 - Sanitization and 80-character title truncation
 - Frontmatter generation with `ingested` tag enforcement
@@ -413,6 +485,33 @@ All 117 unit and integration tests verify:
 - RSS long summary without content field triggering trafilatura extraction
 - RSS short content field using feed content without external network requests
 - RSS duplicate image basename resolution with unique filenames and embed synchronization
+- Notion connector registration (`notion`) and CLI source listing
+- Notion authentication error handling on missing token
+- Notion page discovery and pagination via `client.search`
+- Notion page title extraction across Name, title, and fallbacks
+- Notion frontmatter metadata (`title`, `date`, `source`, `tags`, `page_id`, `last_edited_time`, `word_count`)
+- Notion block conversion: paragraphs, headings, bullet lists, numbered lists, to-dos
+- Notion toggle conversion to pure Markdown headings without `<details>` HTML
+- Notion quote and callout block conversion with emoji icon preservation
+- Notion code blocks with language tag preservation
+- Notion table and table row formatting as pipe tables with column padding
+- Notion inline rich text formatting (bold, italic, strikethrough, code, equations, links)
+- Notion image block download and Obsidian embed formatting (`![[filename.ext]]`)
+- Notion attachment collision disambiguation for identical basenames
+- Notion hosted and external file block download and Obsidian embed formatting (`![[filename.ext]]`)
+- Notion file block download failure fallback to normal Markdown link without aborting note
+- Notion file attachment filename collision disambiguation (`report.pdf`, `report_2.pdf`)
+- Notion file extension inference from Content-Type header when extension is missing
+- Notion file attachments inclusion in `MarkdownNote.attachments`
+- Notion unsupported block graceful fallback
+- Notion block children pagination traversal (`client.blocks.children.list`)
+- Notion page URL attribution block formatting
+- Notion new page ingestion in `Ingested/Notes/`
+- Notion unchanged page deduplication skipping
+- Notion modified page in-place note overwrite without duplicate notes
+- Notion batch isolation preventing single-page failure from aborting search batch
+- Notion API error, 401 auth, 403 permissions, 404 not found, and 429 rate limit mapping to SourceError
+- Notion CLI commands (`ingest-notion` with `--page-id` and generic `ingest --source notion`)
 
 ---
 
@@ -463,9 +562,19 @@ All 117 unit and integration tests verify:
   - [x] Stable identity (`rss:<guid>` / `rss:url:<normalized_url>`) & SHA-256 deduplication lifecycle
   - [x] Independent item batch processing with failure isolation
   - [x] CLI `ingest-rss` and `ingest --source rss --url` commands
-- [x] 100% test pass rate across all 117 tests.
+- [x] **Notion Source Connector** (`sources/notion_source.py`):
+  - [x] Integration token authentication via `NOTION_TOKEN` (secure, never logged)
+  - [x] Page discovery and pagination (`client.search`)
+  - [x] Rich block tree conversion to pure Markdown (paragraphs, headings, lists, todos, toggles, quotes, callouts, code, tables)
+  - [x] Image and file downloading to `Attachments/Ingested/` with collision-safe naming and Obsidian embeds
+  - [x] Notes saved to `Ingested/Notes/` with YAML frontmatter and attribution blockquotes
+  - [x] Stable identity (`notion:<page_id>`) & in-place update lifecycle
+  - [x] Batch processing with individual page error isolation
+  - [x] CLI `ingest-notion` and `ingest --source notion` commands
+- [x] 100% test pass rate across all 152 tests.
 
 ### Next Connectors to Implement:
-1. **Tier 2 Connectors**: Notion, Google Keep, Readwise.
+1. **Tier 2 Connectors**: Google Keep, Readwise, Pocket, Instapaper.
 2. **Tier 3 Connectors**: Twitter/X, Reddit, Slack/Discord/Telegram, Audio Whisper transcription, OCR screenshots, GitHub.
+
 

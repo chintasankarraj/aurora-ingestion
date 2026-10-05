@@ -192,6 +192,10 @@ def create_parser() -> argparse.ArgumentParser:
         "--thread-id", "-t",
         help="Specific thread ID (Gmail) or conversation ID (Outlook) to ingest",
     )
+    ingest_parser.add_argument(
+        "--page-id",
+        help="Specific Notion page ID to ingest",
+    )
 
     # Command: ingest-web
     ingest_web_parser = subparsers.add_parser("ingest-web", help="Shortcut to ingest a webpage by URL")
@@ -221,6 +225,15 @@ def create_parser() -> argparse.ArgumentParser:
         "ingest-rss", help="Shortcut to ingest an RSS or Atom feed by URL"
     )
     ingest_rss_parser.add_argument("url", help="URL of the RSS or Atom feed to ingest")
+
+    # Command: ingest-notion
+    ingest_notion_parser = subparsers.add_parser(
+        "ingest-notion", help="Ingest Notion pages accessible to integration token"
+    )
+    ingest_notion_parser.add_argument(
+        "--page-id",
+        help="Optional specific Notion page ID to ingest (defaults to all accessible pages)",
+    )
 
     # Command: status
     status_parser = subparsers.add_parser("status", help="Show deduplication tracker status")
@@ -286,7 +299,7 @@ async def async_main(args: argparse.Namespace) -> int:
                 print(f"  ... and {len(records) - 20} more records.")
             return 0
 
-        elif args.command in {"ingest", "ingest-web", "ingest-youtube", "ingest-email", "ingest-rss"}:
+        elif args.command in {"ingest", "ingest-web", "ingest-youtube", "ingest-email", "ingest-rss", "ingest-notion"}:
             config.validate()
             pipeline = IngestionPipeline(config=config, tracker=tracker)
             if args.command == "ingest-email":
@@ -297,6 +310,8 @@ async def async_main(args: argparse.Namespace) -> int:
                 source_name = "web"
             elif args.command == "ingest-rss":
                 source_name = "rss"
+            elif args.command == "ingest-notion":
+                source_name = "notion"
             else:
                 source_name = getattr(args, "source", None) or "web"
 
@@ -309,6 +324,8 @@ async def async_main(args: argparse.Namespace) -> int:
                 kwargs["provider"] = args.provider
             if getattr(args, "thread_id", None):
                 kwargs["thread_id"] = args.thread_id
+            if getattr(args, "page_id", None):
+                kwargs["page_id"] = args.page_id
 
             try:
                 stats = await pipeline.run_source(source_name, **kwargs)

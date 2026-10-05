@@ -200,6 +200,23 @@ def build_attribution_block(note: MarkdownNote) -> str:
             meta_parts.append(f"**Published**: {date_str}")
         if meta_parts:
             lines.append(f"> {' · '.join(meta_parts)}")
+    elif note.source == "notion":
+        page_url = note.source_url or ""
+        source_ref = f"[Notion]({page_url})" if page_url else "Notion"
+        lines.append(f"> **Source**: {source_ref}")
+        meta_parts = []
+        if note.author:
+            meta_parts.append(f"**Author**: {note.author}")
+        last_edited = note.extra_metadata.get("last_edited_time")
+        if last_edited:
+            date_str = extract_date_prefix(last_edited)
+            meta_parts.append(f"**Last Edited**: {date_str}")
+        elif note.date:
+            date_str = extract_date_prefix(note.date)
+            if date_str:
+                meta_parts.append(f"**Date**: {date_str}")
+        if meta_parts:
+            lines.append(f"> {' · '.join(meta_parts)}")
     else:
         # Generic attribution block
         meta_parts = [f"**Source**: {source_ref}"]
