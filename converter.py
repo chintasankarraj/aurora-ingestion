@@ -412,6 +412,31 @@ def build_attribution_block(note: MarkdownNote) -> str:
             meta_parts.append(f"**Date**: {date_str}")
         if meta_parts:
             lines.append(f"> {' · '.join(meta_parts)}")
+    elif note.source in {"screenshots", "screenshot"}:
+        source_file = note.extra_metadata.get("source_file") or note.source_url or "image"
+        file_disp = Path(source_file).name if ("/" in str(source_file) or "\\" in str(source_file)) else str(source_file)
+        lines.append(f"> **Source**: Local image — {file_disp}")
+        meta_parts = []
+        dims = note.extra_metadata.get("dimensions")
+        if dims and isinstance(dims, dict):
+            w = dims.get("width")
+            h = dims.get("height")
+            if w is not None and h is not None:
+                meta_parts.append(f"**Dimensions**: {w}x{h}")
+        fmt = note.extra_metadata.get("format")
+        if fmt:
+            meta_parts.append(f"**Format**: {fmt}")
+        ocr_status = note.extra_metadata.get("ocr_status")
+        if ocr_status:
+            meta_parts.append(f"**OCR**: {ocr_status}")
+        ocr_words = note.extra_metadata.get("ocr_word_count")
+        if ocr_words is not None:
+            meta_parts.append(f"**Words**: {ocr_words}")
+        date_str = extract_date_prefix(note.date)
+        if date_str:
+            meta_parts.append(f"**Date**: {date_str}")
+        if meta_parts:
+            lines.append(f"> {' · '.join(meta_parts)}")
     else:
         # Generic attribution block
         meta_parts = [f"**Source**: {source_ref}"]

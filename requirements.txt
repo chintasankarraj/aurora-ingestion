@@ -30,7 +30,12 @@ notion-client>=2.0.0
 # Voice / Audio Source Connector Dependencies
 faster-whisper>=1.0.0
 
+# Screenshot / OCR Source Connector Dependencies
+pytesseract>=0.3.10
+pillow>=10.0.0
+
 # Testing
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
+
 

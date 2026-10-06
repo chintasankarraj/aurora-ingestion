@@ -66,6 +66,7 @@ aurora-ingestion/
 │   ├── slack_source.py   # Slack conversation and thread connector
 │   ├── telegram_source.py# Telegram bot and chat message connector
 │   ├── voice_source.py   # Voice / Audio local Whisper transcription connector
+│   ├── screenshot_source.py # Screenshots / OCR local Tesseract connector
 │   ├── web_source.py     # Web article connector
 │   └── youtube_source.py # YouTube video connector
 ├── tests/
@@ -85,6 +86,7 @@ aurora-ingestion/
 │   ├── test_readwise_source.py # Readwise connector tests
 │   ├── test_reddit_source.py   # Reddit connector tests
 │   ├── test_rss_source.py  # RSS connector tests
+│   ├── test_screenshot_source.py # Screenshots / OCR connector tests
 │   ├── test_slack_source.py# Slack connector tests
 │   ├── test_telegram_source.py# Telegram connector tests
 │   ├── test_tracker.py     # SQLite tracker lifecycle and deduplication tests
@@ -1537,10 +1539,26 @@ All 680 unit and integration tests verify:
   - [x] Notes saved directly to `Ingested/Voice/` with frontmatter tags `[ingested, voice, audio]`
   - [x] Attribution block displaying source file, duration, language, model, and date
   - [x] CLI `ingest-voice` with `--file`, `--files`, `--directory`, `--model`, `--language`, `--device`, `--compute-type`, `--beam-size`, `--vad`, `--max-duration`, and generic `ingest --source voice`
-- [x] 100% test pass rate across all 680 tests.
+- [x] **Screenshots / OCR Source Connector** (`sources/screenshot_source.py`):
+  - [x] Local-first OCR using Tesseract (`pytesseract`) with zero paid cloud API dependencies
+  - [x] Supported formats: `.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, `.tiff`, `.tif`, `.gif`
+  - [x] Streaming chunked 64 KB SHA-256 deduplication identity (`screenshot:sha256:<content_hash>`)
+  - [x] Image validation: non-empty file, size limits (default 100 MB), decompression bomb pixel limits (default 100M pixels), Pillow header integrity verification
+  - [x] In-memory preprocessing: RGBA/LA alpha composite onto solid white background, grayscale conversion, Lanczos upscaling for small images (< 600px), 1.5x contrast enhancement (original file copied unmodified)
+  - [x] Privacy safeguards: OCR text never logged to application logs; EXIF GPS geolocation tags stripped
+  - [x] Text normalization & cleaning: control character removal, trailing whitespace stripping, newline collapse
+  - [x] Missing text handling: `ocr_status: "no_text"`, `ocr_word_count: 0`, and placeholder `*No text detected.*`
+  - [x] Attachment management: copies original image to `Attachments/Ingested/` with collision-safe naming (`_2`, `_3`) and automatic `![[image]]` body embed update
+  - [x] Notes saved directly to `Ingested/Screenshots/` with YAML frontmatter tags `[ingested, screenshots, ocr]`
+  - [x] Attribution block displaying source image filename, dimensions (`WxH`), format, OCR status, word count, and date
+  - [x] Configurable OCR language (`--ocr-lang`, `SCREENSHOT_OCR_LANG`), timeout (`--ocr-timeout`, `SCREENSHOT_OCR_TIMEOUT`), and custom binary path (`--tesseract-cmd`, `SCREENSHOT_TESSERACT_CMD`)
+  - [x] Fault-isolated directory scanning (`--directory`, `--recursive`) skipping bad images without aborting
+  - [x] CLI `ingest-screenshots` with positional/flag directory, `--file`, `--files`, `--recursive`, `--ocr-lang`, `--tesseract-cmd`, `--ocr-timeout`, `--max-file-size`, `--max-pixels`, and generic `ingest --source screenshots`
+- [x] 100% test pass rate across all 735 tests (55 dedicated Screenshots / OCR tests).
 
 ### Next Connectors to Implement:
-1. **Tier 3 Connectors**: Twitter/X, OCR screenshots.
+1. **Tier 3 Connectors**: Twitter/X.
+
 
 
 

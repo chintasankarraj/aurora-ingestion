@@ -11,6 +11,7 @@ from sources.pdf_source import PDFSource
 from sources.readwise_source import ReadwiseSource
 from sources.reddit_source import RedditSource
 from sources.rss_source import RSSSource
+from sources.screenshot_source import ScreenshotSource
 from sources.slack_source import SlackSource
 from sources.telegram_source import TelegramSource
 from sources.voice_source import VoiceSource
@@ -36,5 +37,6 @@ __all__ = [
     "DiscordSource",
     "TelegramSource",
     "VoiceSource",
+    "ScreenshotSource",
 ]
 

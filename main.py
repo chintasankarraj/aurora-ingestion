@@ -372,6 +372,34 @@ def create_parser() -> argparse.ArgumentParser:
         type=float,
         help="Maximum allowed audio duration in seconds for Voice transcription",
     )
+    ingest_parser.add_argument(
+        "--ocr-lang",
+        help="OCR language code for Tesseract (e.g. eng, fra; for screenshots)",
+    )
+    ingest_parser.add_argument(
+        "--tesseract-cmd",
+        help="Path to tesseract binary executable (for screenshots)",
+    )
+    ingest_parser.add_argument(
+        "--ocr-timeout",
+        type=float,
+        help="OCR execution timeout in seconds per image (for screenshots, default: 30)",
+    )
+    ingest_parser.add_argument(
+        "--max-pixels",
+        type=int,
+        help="Maximum image pixels to prevent decompression bombs (for screenshots)",
+    )
+    ingest_parser.add_argument(
+        "--max-file-size",
+        type=int,
+        help="Maximum allowed image file size in bytes (for screenshots)",
+    )
+    ingest_parser.add_argument(
+        "--recursive", "-r",
+        action="store_true",
+        help="Recursively scan subdirectories (for screenshots)",
+    )
 
     # Command: ingest-web
     ingest_web_parser = subparsers.add_parser("ingest-web", help="Shortcut to ingest a webpage by URL")
@@ -745,6 +773,57 @@ def create_parser() -> argparse.ArgumentParser:
         help="Maximum allowed audio duration in seconds (longer files will be rejected)",
     )
 
+    # Command: ingest-screenshots
+    ingest_screenshots_parser = subparsers.add_parser(
+        "ingest-screenshots",
+        help="Ingest and OCR local screenshots and images into Obsidian notes",
+    )
+    ingest_screenshots_parser.add_argument(
+        "directory_pos",
+        nargs="?",
+        help="Path to directory containing screenshots/images to ingest (positional)",
+    )
+    ingest_screenshots_parser.add_argument(
+        "--directory", "-d",
+        help="Path to directory containing screenshots/images to ingest",
+    )
+    ingest_screenshots_parser.add_argument(
+        "--file", "-f",
+        help="Path to a single screenshot/image file to ingest",
+    )
+    ingest_screenshots_parser.add_argument(
+        "--files",
+        help="Comma-separated list of screenshot/image file paths",
+    )
+    ingest_screenshots_parser.add_argument(
+        "--recursive", "-r",
+        action="store_true",
+        help="Recursively scan subdirectories for images",
+    )
+    ingest_screenshots_parser.add_argument(
+        "--ocr-lang",
+        help="OCR language code for Tesseract (default: eng)",
+    )
+    ingest_screenshots_parser.add_argument(
+        "--tesseract-cmd",
+        help="Path to tesseract binary executable",
+    )
+    ingest_screenshots_parser.add_argument(
+        "--ocr-timeout",
+        type=float,
+        help="Timeout in seconds for OCR execution per image (default: 30)",
+    )
+    ingest_screenshots_parser.add_argument(
+        "--max-file-size",
+        type=int,
+        help="Maximum allowed image file size in bytes (default: 100 MB)",
+    )
+    ingest_screenshots_parser.add_argument(
+        "--max-pixels",
+        type=int,
+        help="Maximum allowed image pixels to prevent decompression bombs (default: 100M)",
+    )
+
     # Command: status
     status_parser = subparsers.add_parser("status", help="Show deduplication tracker status")
     status_parser.add_argument(
@@ -825,6 +904,7 @@ async def async_main(args: argparse.Namespace) -> int:
             "ingest-discord",
             "ingest-telegram",
             "ingest-voice",
+            "ingest-screenshots",
         }:
             config.validate()
             pipeline = IngestionPipeline(config=config, tracker=tracker)
@@ -856,6 +936,8 @@ async def async_main(args: argparse.Namespace) -> int:
                 source_name = "telegram"
             elif args.command == "ingest-voice":
                 source_name = "voice"
+            elif args.command == "ingest-screenshots":
+                source_name = "screenshots"
             else:
                 source_name = getattr(args, "source", None) or "web"
 
@@ -953,6 +1035,20 @@ async def async_main(args: argparse.Namespace) -> int:
                 kwargs["vad"] = True
             if getattr(args, "max_duration", None) is not None:
                 kwargs["max_duration"] = args.max_duration
+            if getattr(args, "directory_pos", None) and not getattr(args, "directory", None):
+                kwargs["directory"] = args.directory_pos
+            if getattr(args, "ocr_lang", None):
+                kwargs["ocr_lang"] = args.ocr_lang
+            if getattr(args, "tesseract_cmd", None):
+                kwargs["tesseract_cmd"] = args.tesseract_cmd
+            if getattr(args, "ocr_timeout", None) is not None:
+                kwargs["ocr_timeout"] = args.ocr_timeout
+            if getattr(args, "max_pixels", None) is not None:
+                kwargs["max_pixels"] = args.max_pixels
+            if getattr(args, "max_file_size", None) is not None:
+                kwargs["max_file_size"] = args.max_file_size
+            if getattr(args, "recursive", False):
+                kwargs["recursive"] = True
 
             try:
                 stats = await pipeline.run_source(source_name, **kwargs)
