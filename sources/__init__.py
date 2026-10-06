@@ -2,6 +2,7 @@
 
 from sources.base import BaseSource, SourceRegistry, async_retry
 from sources.email_source import EmailSource
+from sources.github_source import GitHubSource
 from sources.instapaper_source import InstapaperSource
 from sources.keep_source import KeepSource
 from sources.notion_source import NotionSource
@@ -24,5 +25,6 @@ __all__ = [
     "KeepSource",
     "ReadwiseSource",
     "InstapaperSource",
+    "GitHubSource",
 ]
 

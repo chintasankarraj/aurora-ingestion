@@ -227,7 +227,31 @@ def create_parser() -> argparse.ArgumentParser:
     ingest_parser.add_argument(
         "--limit",
         type=int,
-        help="Maximum items to fetch (e.g. for Instapaper)",
+        help="Maximum items to fetch (e.g. for Instapaper/GitHub)",
+    )
+    ingest_parser.add_argument(
+        "--repo",
+        action="append",
+        help="GitHub repository to ingest (owner/repo, can be repeated)",
+    )
+    ingest_parser.add_argument(
+        "--repos",
+        help="Comma-separated list of GitHub repositories (e.g. owner/repo1,owner/repo2)",
+    )
+    ingest_parser.add_argument(
+        "--state",
+        choices=["all", "open", "closed"],
+        help="Issue state to fetch for GitHub (default: all)",
+    )
+    ingest_parser.add_argument(
+        "--include-gists",
+        action="store_true",
+        help="Include user gists in GitHub ingestion",
+    )
+    ingest_parser.add_argument(
+        "--gists-only",
+        action="store_true",
+        help="Ingest only user gists in GitHub ingestion",
     )
 
     # Command: ingest-web
@@ -325,6 +349,51 @@ def create_parser() -> argparse.ArgumentParser:
         help="Number of bookmarks to fetch per request (default: 50)",
     )
 
+    # Command: ingest-github
+    ingest_gh_parser = subparsers.add_parser(
+        "ingest-github",
+        help="Ingest GitHub repository issues and/or user gists",
+    )
+    ingest_gh_parser.add_argument(
+        "--repo", "-r",
+        action="append",
+        help="Repository to ingest in owner/repo format (can be repeated)",
+    )
+    ingest_gh_parser.add_argument(
+        "--repos",
+        help="Comma-separated list of repositories (e.g. owner/repo1,owner/repo2)",
+    )
+    ingest_gh_parser.add_argument(
+        "--token",
+        help="GitHub personal access token (defaults to GITHUB_TOKEN)",
+    )
+    ingest_gh_parser.add_argument(
+        "--state",
+        choices=["all", "open", "closed"],
+        default="all",
+        help="Issue state to fetch: all, open, or closed (default: all)",
+    )
+    ingest_gh_parser.add_argument(
+        "--include-gists",
+        action="store_true",
+        help="Include user gists in ingestion",
+    )
+    ingest_gh_parser.add_argument(
+        "--gists-only",
+        action="store_true",
+        help="Ingest only user gists",
+    )
+    ingest_gh_parser.add_argument(
+        "--no-comments",
+        action="store_true",
+        help="Do not fetch issue comments",
+    )
+    ingest_gh_parser.add_argument(
+        "--limit",
+        type=int,
+        help="Maximum issues/gists to fetch per repository/gists",
+    )
+
     # Command: status
     status_parser = subparsers.add_parser("status", help="Show deduplication tracker status")
     status_parser.add_argument(
@@ -389,7 +458,7 @@ async def async_main(args: argparse.Namespace) -> int:
                 print(f"  ... and {len(records) - 20} more records.")
             return 0
 
-        elif args.command in {"ingest", "ingest-web", "ingest-youtube", "ingest-email", "ingest-rss", "ingest-notion", "ingest-google-keep", "ingest-readwise", "ingest-instapaper"}:
+        elif args.command in {"ingest", "ingest-web", "ingest-youtube", "ingest-email", "ingest-rss", "ingest-notion", "ingest-google-keep", "ingest-readwise", "ingest-instapaper", "ingest-github"}:
             config.validate()
             pipeline = IngestionPipeline(config=config, tracker=tracker)
             if args.command == "ingest-email":
@@ -408,6 +477,8 @@ async def async_main(args: argparse.Namespace) -> int:
                 source_name = "readwise"
             elif args.command == "ingest-instapaper":
                 source_name = "instapaper"
+            elif args.command == "ingest-github":
+                source_name = "github"
             else:
                 source_name = getattr(args, "source", None) or "web"
 
@@ -438,6 +509,18 @@ async def async_main(args: argparse.Namespace) -> int:
                 kwargs["folder"] = args.folder
             if getattr(args, "limit", None):
                 kwargs["limit"] = args.limit
+            if getattr(args, "repo", None):
+                kwargs["repo"] = args.repo
+            if getattr(args, "repos", None):
+                kwargs["repos"] = args.repos
+            if getattr(args, "state", None):
+                kwargs["state"] = args.state
+            if getattr(args, "include_gists", False):
+                kwargs["include_gists"] = True
+            if getattr(args, "gists_only", False):
+                kwargs["gists_only"] = True
+            if getattr(args, "no_comments", False):
+                kwargs["include_comments"] = False
 
             try:
                 stats = await pipeline.run_source(source_name, **kwargs)

@@ -267,6 +267,48 @@ def build_attribution_block(note: MarkdownNote) -> str:
             meta_parts.append(f"**Date**: {date_str}")
         if meta_parts:
             lines.append(f"> {' · '.join(meta_parts)}")
+    elif note.source == "github":
+        github_type = note.extra_metadata.get("github_type", "issue")
+        source_url = note.source_url or ""
+        if github_type == "gist":
+            source_ref = f"[GitHub Gist]({source_url})" if source_url else "GitHub Gist"
+            lines.append(f"> **Source**: {source_ref}")
+            meta_parts = []
+            if note.author:
+                meta_parts.append(f"**Owner**: {note.author}")
+            gist_id = note.extra_metadata.get("gist_id")
+            if gist_id:
+                meta_parts.append(f"**Gist ID**: {gist_id}")
+            if source_url:
+                meta_parts.append(f"**URL**: [{source_url}]({source_url})")
+            date_str = extract_date_prefix(note.date)
+            if date_str:
+                meta_parts.append(f"**Date**: {date_str}")
+            if meta_parts:
+                lines.append(f"> {' · '.join(meta_parts)}")
+        else:
+            # Issue
+            source_ref = f"[GitHub]({source_url})" if source_url else "GitHub"
+            lines.append(f"> **Source**: {source_ref}")
+            meta_parts = []
+            repo = note.extra_metadata.get("repository")
+            if repo:
+                meta_parts.append(f"**Repository**: {repo}")
+            issue_num = note.extra_metadata.get("issue_number")
+            if issue_num:
+                meta_parts.append(f"**Issue**: #{issue_num}")
+            if note.author:
+                meta_parts.append(f"**Author**: {note.author}")
+            state = note.extra_metadata.get("state")
+            if state:
+                meta_parts.append(f"**State**: {state.title()}")
+            if source_url:
+                meta_parts.append(f"**URL**: [{source_url}]({source_url})")
+            date_str = extract_date_prefix(note.date)
+            if date_str:
+                meta_parts.append(f"**Date**: {date_str}")
+            if meta_parts:
+                lines.append(f"> {' · '.join(meta_parts)}")
     else:
         # Generic attribution block
         meta_parts = [f"**Source**: {source_ref}"]

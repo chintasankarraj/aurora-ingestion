@@ -54,6 +54,7 @@ aurora-ingestion/
 │   ├── __init__.py       # Sources package export
 │   ├── base.py           # BaseSource abstract interface, SourceRegistry, async_retry
 │   ├── email_source.py   # Email thread connector (Gmail, Outlook)
+│   ├── github_source.py  # GitHub issues and gists connector
 │   ├── instapaper_source.py # Instapaper bookmark and highlight connector
 │   ├── keep_source.py    # Google Keep Takeout JSON connector
 │   ├── notion_source.py  # Notion page connector
@@ -69,6 +70,7 @@ aurora-ingestion/
 │   ├── test_config.py      # Vault path & folder configuration tests
 │   ├── test_converter.py   # Sanitization, frontmatter, and writer tests
 │   ├── test_email_source.py# Email connector tests
+│   ├── test_github_source.py # GitHub connector tests
 │   ├── test_instapaper_source.py # Instapaper connector tests
 │   ├── test_keep_source.py # Google Keep connector tests
 │   ├── test_notion_source.py# Notion connector tests
@@ -609,6 +611,70 @@ The Instapaper connector synchronizes saved bookmarks, articles, highlights, and
 
 ---
 
+## GitHub Source Connector (`sources/github_source.py`)
+
+The GitHub connector synchronizes repository issues and user gists from the official GitHub REST API into Aurora's Obsidian vault.
+
+### Capabilities:
+- **Repository Issues**:
+  - Ingest issues across one or multiple configured repositories (`owner/repository`, e.g. `chintasankarraj/aurora-ingestion`).
+  - Pull requests are strictly filtered out (`pull_request` key detection).
+  - Configurable state filtering: `all` (default), `open`, or `closed`.
+  - Issue comments fetched in chronological order (`GET /repos/{owner}/{repo}/issues/{issue_number}/comments`) and rendered under `## Comments` with author and timestamp (`### {user} — {created_at}`).
+  - Issue comments can be excluded with `--no-comments`.
+  - Metadata section: State, Labels, Assignees, and Milestone rendered under `## GitHub Metadata`.
+- **User Gists**:
+  - Ingest public and secret gists for the authenticated user (`GET /gists`).
+  - Gist files ordered deterministically with content displayed under `## Files`.
+  - Dynamic code block fences (`format_code_fence`): adapts fence backtick count (e.g. ` ```` `) to safely enclose code containing backticks without breaking out of Markdown blocks.
+  - Truncated files flagged with notice `*(File content truncated by GitHub API)*`.
+  - Gist metadata (visibility, creation, update dates) rendered under `## Gist Metadata`.
+- **Target Folder**:
+  - Notes written directly to `${AURORA_VAULT_PATH}/Ingested/Code/<YYYY-MM-DD>_github_<sanitized-title>.md`.
+- **YAML Frontmatter**:
+  - `title`, `date`, `source: "github"`, `tags: [ingested, github, code, ...]`, `ingested_at`, `source_url`, `author`, `item_type: "issue"` or `"gist"`, `issue_number`, `repository`, `state`, `gist_id`, `is_public`.
+- **Tag Normalization**:
+  - Extracts labels/tags from issues, sanitizes spaces and `#` characters, and enforces mandatory `ingested`, `github`, and `code` tags.
+- **Deduplication & In-Place Updates**:
+  - Immutable stable identifiers:
+    - Issue: `github:issue:<owner>/<repo>#<number>`
+    - Gist: `github:gist:<gist_id>`
+    - Identity is never derived from mutable titles or URLs.
+  - Content hash: SHA-256 digest of issue body/comments or gist files and metadata.
+  - Unchanged items are skipped; updated issues/gists overwrite the existing note at the exact same vault path in `Ingested/Code/`.
+- **Defensive Networking & Batch Fault Isolation**:
+  - Token and credential secrecy: tokens are scrubbed from logs, exceptions, and frontmatter.
+  - Pagination loop defense with duplicate batch fingerprint tracking.
+  - Batch isolation across repositories and individual malformed records.
+  - Graceful handling of API rate limits (HTTP 403/429 with reset time extraction) and network errors.
+
+### Setup & Authentication:
+1. Generate a GitHub Personal Access Token (classic `repo` / `gist` scope or fine-grained PAT) and configure:
+   ```bash
+   export GITHUB_TOKEN="ghp_your_token_here"
+   # Or in .env:
+   # GITHUB_TOKEN=ghp_your_token_here
+   ```
+2. Run ingestion:
+   ```bash
+   # Ingest issues for a single repository:
+   python main.py ingest-github --repo chintasankarraj/aurora-ingestion
+
+   # Ingest open issues across multiple repositories:
+   python main.py ingest-github --repos "owner/repo1,owner/repo2" --state open
+
+   # Ingest both issues and user gists:
+   python main.py ingest-github --repo owner/repo --include-gists
+
+   # Ingest user gists only:
+   python main.py ingest-github --gists-only
+
+   # Generic CLI syntax:
+   python main.py ingest --source github --repo owner/repo
+   ```
+
+---
+
 ## Running Tests
 
 Run the complete test suite with `pytest`:
@@ -617,7 +683,7 @@ Run the complete test suite with `pytest`:
 pytest -v
 ```
 
-All 280 unit and integration tests verify:
+All 341 unit and integration tests verify:
 - Vault path expansion and validation
 - Sanitization and 80-character title truncation
 - Frontmatter generation with `ingested` tag enforcement
@@ -775,6 +841,26 @@ All 280 unit and integration tests verify:
 - Instapaper stable immutable source ID (`instapaper:<bookmark_id>`, rejecting items without bookmark ID to prevent title drift)
 - Instapaper edge case handling (missing title fallback, missing author/URL, Unicode emojis/symbols)
 - Instapaper CLI commands (`ingest-instapaper` with `--folder` and `--limit`, and generic `ingest --source instapaper`)
+- GitHub connector registration (`github`) and CLI source listing
+- GitHub authentication via `GITHUB_TOKEN` and token secrecy (never logged, exposed in exceptions, or written to frontmatter)
+- GitHub repository issues retrieval with pull requests strictly filtered out
+- GitHub issue comment pagination and chronological markdown formatting (`### author — date`)
+- GitHub user gists retrieval with deterministically ordered files and dynamic code block fences
+- GitHub issue and gist YAML frontmatter generation (`item_type: "issue"` or `"gist"`, `issue_number`, `repository`, `state`, `gist_id`, `is_public`)
+- GitHub metadata sections (`## GitHub Metadata` and `## Gist Metadata`)
+- GitHub tag extraction with label normalization and mandatory `ingested`, `github`, and `code` tags
+- GitHub note generation targeted directly under `Ingested/Code/`
+- GitHub filename sanitization, 80-character title truncation, and collision handling (`_2.md`)
+- GitHub deduplication lifecycle (NEW creates note, UNCHANGED skips, CHANGED overwrites in-place at same path)
+- GitHub stable immutable source IDs (`github:issue:<owner>/<repo>#<number>`, `github:gist:<gist_id>`, rejecting missing identifiers to prevent title drift)
+- GitHub API error handling (401 unauthorized, 403 forbidden, 404 repo isolation, 429 rate limit with reset time, 500 server error, timeouts, connection errors)
+- GitHub batch fault isolation across repositories and individual records
+- GitHub CLI commands (`ingest-github` with `--repo`, `--repos`, `--state`, `--include-gists`, `--gists-only`, `--no-comments`, `--limit`, and generic `ingest --source github`)
+- GitHub HTML content normalization via `markdownify` ensuring pure Markdown output without raw HTML tags or script/style elements, while preserving ordinary Markdown, headings, lists, tables, code blocks, and comparison operators (`<` and `>`)
+- GitHub issue comments explicit query parameters (`sort=created`, `direction=asc`) and local chronological sorting by `created_at` ascending and `id` ascending
+- GitHub malformed comment resilience (safe author extraction for missing, None, non-dict, or login-less user objects without aborting the issue or valid comments)
+- GitHub truncated gist file recovery via `raw_url` (fetching complete code on HTTP 200, preserving language, falling back to partial content with truncation notice on failure, secret-safe logging)
+- GitHub gist body single `## Files` section header enforcement and duplicate prevention
 
 ---
 
@@ -868,10 +954,26 @@ All 280 unit and integration tests verify:
   - [x] Notes saved directly to `Ingested/Web/` with YAML frontmatter and attribution blockquotes
   - [x] Stable identity (`instapaper:<bookmark_id>`) & in-place update lifecycle
   - [x] CLI `ingest-instapaper` with `--folder` and `--limit`, and generic `ingest --source instapaper`
-- [x] 100% test pass rate across all 280 tests.
+- [x] **GitHub Source Connector** (`sources/github_source.py`):
+  - [x] GitHub REST API integration for repository issues and user gists
+  - [x] Pull request filtering (`pull_request` key detection)
+  - [x] Issue comments retrieval and chronological formatting (`### author — date`)
+  - [x] User gists ingestion with dynamic code fences (`format_code_fence`) adapting to file backtick counts
+  - [x] Secure authentication via `GITHUB_TOKEN` (zero token leaking in logs, exceptions, or frontmatter)
+  - [x] Tag normalization and `#` symbol sanitization with mandatory `ingested`, `github`, and `code` tags
+  - [x] Notes saved directly to `Ingested/Code/` with YAML frontmatter and attribution blockquotes
+  - [x] Stable identity (`github:issue:<owner>/<repo>#<number>`, `github:gist:<gist_id>`) & in-place update lifecycle
+  - [x] Batch fault isolation across repositories and individual malformed records
+  - [x] Defensive pagination with duplicate batch fingerprint tracking
+  - [x] Pure Markdown content normalization via `markdownify` stripping raw HTML and `<script>`/`<style>` elements
+  - [x] Explicit chronological comment querying (`sort=created`, `direction=asc`) and local sorting (`created_at` asc, `id` asc)
+  - [x] Non-fatal malformed comment and user data resilience (missing/None/non-dict/login-less user objects default safely to `unknown`)
+  - [x] Truncated gist file recovery via `raw_url` with partial content fallback and truncation notices
+  - [x] CLI `ingest-github` with `--repo`, `--repos`, `--state`, `--include-gists`, `--gists-only`, `--no-comments`, `--limit`, and generic `ingest --source github`
+- [x] 100% test pass rate across all 340 tests.
 
 ### Next Connectors to Implement:
-1. **Tier 3 Connectors**: Twitter/X, Reddit, Slack/Discord/Telegram, Audio Whisper transcription, OCR screenshots, GitHub.
+1. **Tier 3 Connectors**: Twitter/X, Reddit, Slack/Discord/Telegram, Audio Whisper transcription, OCR screenshots.
 
 
 
