@@ -285,6 +285,30 @@ def create_parser() -> argparse.ArgumentParser:
         type=int,
         help="Maximum comments to fetch per item (e.g. for Reddit)",
     )
+    ingest_parser.add_argument(
+        "--channel", "-c",
+        action="append",
+        help="Channel to ingest for Slack (can be repeated, e.g. -c general)",
+    )
+    ingest_parser.add_argument(
+        "--channels",
+        help="Comma-separated list of channels for Slack (e.g. general,engineering)",
+    )
+    ingest_parser.add_argument(
+        "--max-messages",
+        type=int,
+        help="Maximum messages to fetch per channel for Slack",
+    )
+    ingest_parser.add_argument(
+        "--max-replies",
+        type=int,
+        help="Maximum replies to fetch per thread for Slack",
+    )
+    ingest_parser.add_argument(
+        "--no-threads",
+        action="store_true",
+        help="Do not fetch threaded replies for Slack",
+    )
 
     # Command: ingest-web
     ingest_web_parser = subparsers.add_parser("ingest-web", help="Shortcut to ingest a webpage by URL")
@@ -479,6 +503,46 @@ def create_parser() -> argparse.ArgumentParser:
         help="Do not fetch post comments",
     )
 
+    # Command: ingest-slack
+    ingest_slack_parser = subparsers.add_parser(
+        "ingest-slack",
+        help="Ingest Slack conversation messages and threads from configured channels",
+    )
+    ingest_slack_parser.add_argument(
+        "--channel", "-c",
+        action="append",
+        help="Channel to ingest (can be repeated, e.g. -c general)",
+    )
+    ingest_slack_parser.add_argument(
+        "--channels",
+        help="Comma-separated list of channels (e.g. general,engineering)",
+    )
+    ingest_slack_parser.add_argument(
+        "--token",
+        help="Slack API OAuth token override (defaults to SLACK_TOKEN or SLACK_BOT_TOKEN)",
+    )
+    ingest_slack_parser.add_argument(
+        "--limit",
+        type=int,
+        help="Maximum messages to fetch per channel",
+    )
+    ingest_slack_parser.add_argument(
+        "--max-messages",
+        type=int,
+        help="Maximum messages to fetch per channel (alias for --limit)",
+    )
+    ingest_slack_parser.add_argument(
+        "--max-replies",
+        type=int,
+        default=50,
+        help="Maximum replies to fetch per thread (default: 50)",
+    )
+    ingest_slack_parser.add_argument(
+        "--no-threads",
+        action="store_true",
+        help="Do not fetch threaded replies",
+    )
+
     # Command: status
     status_parser = subparsers.add_parser("status", help="Show deduplication tracker status")
     status_parser.add_argument(
@@ -543,7 +607,7 @@ async def async_main(args: argparse.Namespace) -> int:
                 print(f"  ... and {len(records) - 20} more records.")
             return 0
 
-        elif args.command in {"ingest", "ingest-web", "ingest-youtube", "ingest-email", "ingest-rss", "ingest-notion", "ingest-google-keep", "ingest-readwise", "ingest-instapaper", "ingest-github", "ingest-reddit"}:
+        elif args.command in {"ingest", "ingest-web", "ingest-youtube", "ingest-email", "ingest-rss", "ingest-notion", "ingest-google-keep", "ingest-readwise", "ingest-instapaper", "ingest-github", "ingest-reddit", "ingest-slack"}:
             config.validate()
             pipeline = IngestionPipeline(config=config, tracker=tracker)
             if args.command == "ingest-email":
@@ -566,6 +630,8 @@ async def async_main(args: argparse.Namespace) -> int:
                 source_name = "github"
             elif args.command == "ingest-reddit":
                 source_name = "reddit"
+            elif args.command == "ingest-slack":
+                source_name = "slack"
             else:
                 source_name = getattr(args, "source", None) or "web"
 
@@ -622,6 +688,17 @@ async def async_main(args: argparse.Namespace) -> int:
                 kwargs["listing"] = args.listing
             if getattr(args, "max_comments", None) is not None:
                 kwargs["max_comments"] = args.max_comments
+            if getattr(args, "channel", None):
+                kwargs["channel"] = args.channel
+            if getattr(args, "channels", None):
+                kwargs["channels"] = args.channels
+            if getattr(args, "max_messages", None) is not None:
+                kwargs["max_messages"] = args.max_messages
+            if getattr(args, "max_replies", None) is not None:
+                kwargs["max_replies"] = args.max_replies
+            if getattr(args, "no_threads", False):
+                kwargs["no_threads"] = True
+                kwargs["include_threads"] = False
 
             try:
                 stats = await pipeline.run_source(source_name, **kwargs)

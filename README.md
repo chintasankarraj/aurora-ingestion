@@ -60,7 +60,9 @@ aurora-ingestion/
 │   ├── notion_source.py  # Notion page connector
 │   ├── pdf_source.py     # PDF document connector
 │   ├── readwise_source.py# Readwise highlight and book connector
+│   ├── reddit_source.py  # Reddit saved posts and comments connector
 │   ├── rss_source.py     # RSS/Atom syndication connector
+│   ├── slack_source.py   # Slack conversation and thread connector
 │   ├── web_source.py     # Web article connector
 │   └── youtube_source.py # YouTube video connector
 ├── tests/
@@ -77,7 +79,9 @@ aurora-ingestion/
 │   ├── test_pdf_source.py  # PDF connector tests
 │   ├── test_pipeline.py    # Pipeline orchestration and retry tests
 │   ├── test_readwise_source.py # Readwise connector tests
+│   ├── test_reddit_source.py   # Reddit connector tests
 │   ├── test_rss_source.py  # RSS connector tests
+│   ├── test_slack_source.py# Slack connector tests
 │   ├── test_tracker.py     # SQLite tracker lifecycle and deduplication tests
 │   ├── test_web_source.py  # Web connector tests
 │   └── test_youtube_source.py # YouTube connector tests
@@ -744,6 +748,101 @@ The Reddit connector synchronizes posts and their comment discussions from confi
 
 ---
 
+## Slack Ingestion Connector (`SlackSource`)
+
+The Slack connector connects to the official Slack Web API using Bearer token authentication (`SLACK_TOKEN` or `SLACK_BOT_TOKEN`). It discovers accessible public and private channels, fetches channel message histories, traverses threaded replies, normalizes Slack mrkdwn and HTML entities, and compiles each message or thread into an Obsidian-compatible Markdown note under `Ingested/Social/`.
+
+### Key Features:
+- **Scope & Targets**:
+  - Connects to public channels and accessible private channels.
+  - Captures messages and threaded replies into unified, coherent notes.
+  - Target vault folder: `${AURORA_VAULT_PATH}/Ingested/Social/<YYYY-MM-DD>_slack_<sanitized-title>.md`.
+  - Tags: `[ingested, slack, social]`.
+- **Authentication**:
+  - Bearer token authentication via `Authorization: Bearer <token>`.
+  - Configurable via `SLACK_TOKEN`, `SLACK_BOT_TOKEN`, or `--token` CLI argument.
+  - Secret scrubbing: tokens and Authorization headers are automatically redacted from all exceptions, logs, and notes.
+- **Required OAuth Scopes**:
+  - Public channels: `channels:history`, `channels:read`
+  - Private channels: `groups:history`, `groups:read`
+  - User resolution: `users:read`
+- **Channel Discovery & Selection**:
+  - Discovers channels via `conversations.list` with cursor-based pagination.
+  - Accepts channel names (with or without `#`) or direct Slack channel IDs (e.g. `C12345678`).
+  - Supports multiple channels via repeated `--channel` / `-c` or comma-separated `--channels`.
+  - Fault isolation: a missing, archived, or inaccessible channel reports a warning without halting ingestion of remaining channels.
+- **Message Ingestion & Subtype Filtering**:
+  - Ingests channel message history via `conversations.history` with cursor pagination.
+  - Filters system noise (`channel_join`, `channel_leave`, `channel_topic`, `channel_purpose`, `channel_name`, etc.).
+  - Handles `message_changed` by extracting the updated inner message.
+  - Skips `message_deleted` messages without fabricating content.
+  - Handles bot messages (`bot_message` subtype or `bot_id`).
+- **Thread Ingestion & Representation**:
+  - For messages with replies (`reply_count > 0`), retrieves full threads via `conversations.replies`.
+  - Renders parent message and replies as a single coherent document:
+    - Root message under `## Message`.
+    - Chronologically ordered replies under `## Thread` with `### @user — YYYY-MM-DD HH:MM` and `#### @reply_user — YYYY-MM-DD HH:MM`.
+  - Omission option: `--no-threads` to ingest parent messages only.
+  - Thread fault isolation: if replies fail to fetch, the parent message note is safely preserved.
+- **User Resolution**:
+  - In-memory cache loaded via `users.list` mapping user IDs to display names or real names.
+  - On-demand `users.info` fallback for unlisted members with graceful fallback to `unknown`.
+- **Text & Markup Normalization**:
+  - User mentions: `<@U123456>` or `<@U123456|alice>` → `@alice`.
+  - Channel mentions: `<#C123456|name>` or `<#C123456>` → `#name`.
+  - Broadcasts: `<!here>` → `@here`, `<!channel>` → `@channel`, `<!everyone>` → `@everyone`.
+  - Links: `<https://example.com|Label>` → `[Label](https://example.com)` (strictly validated for `http` and `https` schemes; unsafe schemes like `javascript:`, `data:`, `file:` rendered as plain text).
+  - Unescapes Slack entities (`&amp;`, `&lt;`, `&gt;`) and preserves comparison operators (`<`, `>`).
+  - Pure Markdown normalization via `markdownify` stripping raw HTML and `<script>`/`<style>` blocks.
+- **Stable Identity & Deduplication**:
+  - Stable identifier: `slack:message:<channel_id>:<root_ts>`.
+  - Both root messages and threads use the root message timestamp (`thread_ts` or `ts`).
+  - Edits and new thread replies overwrite the existing note in-place without producing duplicate notes.
+- **Defensive Rate-Limit Handling**:
+  - Evaluates HTTP 429 and `{"ok": false, "error": "ratelimited"}` responses.
+  - Parses `Retry-After` header and surfaces user-friendly reset duration messages.
+
+### Setup & Authentication:
+1. Create a Slack App in your workspace at [api.slack.com/apps](https://api.slack.com/apps).
+2. Under **OAuth & Permissions**, add the required Bot or User token scopes:
+   - `channels:history`
+   - `channels:read`
+   - `groups:history`
+   - `groups:read`
+   - `users:read`
+3. Install the app to your workspace and copy the Bot User OAuth Token (`xoxb-...`).
+4. Set credentials in your environment or `.env`:
+   ```bash
+   export SLACK_TOKEN="xoxb-your-slack-bot-token"
+   # Optional default channels:
+   # export SLACK_CHANNELS="general,engineering"
+   ```
+5. Invite the bot to the channels you wish to ingest (`/invite @YourBotName`).
+6. Run ingestion:
+   ```bash
+   # Ingest a single channel:
+   python main.py ingest-slack --channel general
+
+   # Ingest multiple channels:
+   python main.py ingest-slack --channels "general,engineering,announcements"
+
+   # Ingest with message limit and thread reply cap:
+   python main.py ingest-slack --channel engineering --limit 20 --max-replies 30
+
+   # Ingest without thread replies:
+   python main.py ingest-slack --channel general --no-threads
+
+   # Generic CLI syntax:
+   python main.py ingest --source slack --channel general
+   ```
+
+### Limitations & Rate Limit Warning:
+- **Newer App Rate Limits**: Slack imposes strict Tier 3 / Tier 2 rate limits on `conversations.history` and `conversations.replies`. For newer non-Marketplace apps, Slack may restrict requests to as low as **1 request per minute** and **max 15 messages per request**. Bulk historical ingestion across large workspaces may therefore be slow due to Slack's API throttling.
+- **Attachments**: Binary file attachments are not downloaded in this version; file titles, MIME types, and permalinks are preserved as note metadata.
+- **Direct Messages**: DMs (`im:history`) and multi-person DMs (`mpim:history`) are out of scope for this version and require additional scopes.
+
+---
+
 ## Running Tests
 
 Run the complete test suite with `pytest`:
@@ -752,7 +851,7 @@ Run the complete test suite with `pytest`:
 pytest -v
 ```
 
-All 397 unit and integration tests verify:
+All 455 unit and integration tests verify:
 - Vault path expansion and validation
 - Sanitization and 80-character title truncation
 - Frontmatter generation with `ingested` tag enforcement
@@ -949,6 +1048,28 @@ All 397 unit and integration tests verify:
 - Reddit error mapping (401 auth, 403 forbidden, 404 not found, 429 rate limit with reset time, 500 server error, timeouts, connection errors)
 - Reddit batch fault isolation across subreddits, individual posts, and comment threads
 - Reddit CLI commands (`ingest-reddit` with `--subreddit`, `--subreddits`, `--listing`, `--limit`, `--max-comments`, `--no-comments`, and generic `ingest --source reddit`)
+- Slack connector registration (`slack`) and CLI source listing
+- Slack Bearer token authentication (`SLACK_TOKEN`, `SLACK_BOT_TOKEN`, `--token`) and header construction
+- Slack secret and token scrubbing (tokens redacted from errors, logs, frontmatter, and markdown)
+- Slack conversation discovery across public and private channels (`conversations.list`) with cursor pagination
+- Slack channel resolution by ID or name (with or without `#`)
+- Slack message history ingestion (`conversations.history`) with cursor pagination and limit enforcement
+- Slack system message filtering (`channel_join`, `channel_leave`, `channel_topic`, etc.)
+- Slack message subtypes handling (`message_changed` inner message extraction, `message_deleted` skipping)
+- Slack thread reply retrieval (`conversations.replies`) and chronological sorting (`ts` ascending)
+- Slack thread single-document Markdown rendering with parent and reply hierarchy
+- Slack user resolution caching via `users.list` and on-demand `users.info` fallback
+- Slack mrkdwn normalization (`<@U...>`, `<#C...>`, `<!here>`, `<!channel>`, `<!everyone>`)
+- Slack URL safety validation (HTTP/HTTPS linkified, unsafe schemes rendered as plain text)
+- Slack pure Markdown normalization via `markdownify` stripping raw HTML and `<script>`/`<style>` elements
+- Slack comparisons (`<`, `>`) and code block preservation
+- Slack cursor loop defense and repeated cursor cycle prevention
+- Slack notes saved directly to `Ingested/Social/` with YAML frontmatter and attribution blockquotes
+- Slack stable immutable source IDs (`slack:message:<channel_id>:<root_ts>`) and in-place update lifecycle
+- Slack error mapping (HTTP 200 `ok: false`, `invalid_auth`, `missing_scope`, `channel_not_found`, `not_in_channel`, `token_revoked`)
+- Slack rate limit defense (HTTP 429 and `ratelimited` error handling with `Retry-After` reset duration)
+- Slack fault isolation across channels, individual messages, and thread reply retrieval
+- Slack CLI commands (`ingest-slack` with `--channel`, `--channels`, `--token`, `--limit`, `--max-messages`, `--max-replies`, `--no-threads`, and generic `ingest --source slack`)
 
 ---
 
@@ -1069,10 +1190,24 @@ All 397 unit and integration tests verify:
   - [x] Stable identity (`reddit:post:<post_id>`) & in-place update lifecycle
   - [x] Batch fault isolation across subreddits, individual posts, and comment threads
   - [x] CLI `ingest-reddit` with `--subreddit`, `--subreddits`, `--listing`, `--limit`, `--max-comments`, `--no-comments`, and generic `ingest --source reddit`
-- [x] 100% test pass rate across all 397 tests.
+- [x] **Slack Source Connector** (`sources/slack_source.py`):
+  - [x] Slack Web API integration with Bearer token authentication (`SLACK_TOKEN`, `SLACK_BOT_TOKEN`)
+  - [x] Channel discovery (`conversations.list`) across public and private channels with cursor pagination
+  - [x] Message history fetching (`conversations.history`) with system noise filtering and subtype handling
+  - [x] Thread reply retrieval (`conversations.replies`) with chronological ordering and single-document rendering
+  - [x] In-memory user resolution cache (`users.list`, `users.info`)
+  - [x] Text normalization for `<@U...>`, `<#C...>`, `<!here>`, and HTTP/HTTPS safe URL links
+  - [x] Pure Markdown content normalization via `markdownify` stripping raw HTML and script/style tags
+  - [x] Secure authentication with credentials scrubbed from logs, errors, and frontmatter
+  - [x] Notes saved directly to `Ingested/Social/` with YAML frontmatter and attribution blockquotes
+  - [x] Stable identity (`slack:message:<channel_id>:<root_ts>`) & in-place update lifecycle
+  - [x] Rate limit handling (HTTP 429 / `ratelimited` with `Retry-After` header extraction)
+  - [x] Fault isolation across channels, individual messages, and thread replies
+  - [x] CLI `ingest-slack` with `--channel`, `--channels`, `--token`, `--limit`, `--max-messages`, `--max-replies`, `--no-threads`, and generic `ingest --source slack`
+- [x] 100% test pass rate across all 455 tests.
 
 ### Next Connectors to Implement:
-1. **Tier 3 Connectors**: Twitter/X, Slack/Discord/Telegram, Audio Whisper transcription, OCR screenshots.
+1. **Tier 3 Connectors**: Twitter/X, Discord, Telegram, Audio Whisper transcription, OCR screenshots.
 
 
 

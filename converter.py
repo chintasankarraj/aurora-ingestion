@@ -329,6 +329,24 @@ def build_attribution_block(note: MarkdownNote) -> str:
             meta_parts.append(f"**Created**: {date_str}")
         if meta_parts:
             lines.append(f"> {' · '.join(meta_parts)}")
+    elif note.source == "slack":
+        channel = note.extra_metadata.get("channel", "")
+        chan_disp = f"#{channel}" if channel and not channel.startswith("#") else (channel or "Slack")
+        source_url = note.source_url or ""
+        source_ref = f"[Slack — {chan_disp}]({source_url})" if source_url else f"Slack — {chan_disp}"
+        lines.append(f"> **Source**: {source_ref}")
+        meta_parts = []
+        if note.author:
+            author_disp = f"@{note.author}" if not note.author.startswith("@") else note.author
+            meta_parts.append(f"**Author**: {author_disp}")
+        date_str = extract_date_prefix(note.date)
+        if date_str:
+            meta_parts.append(f"**Date**: {date_str}")
+        reply_count = note.extra_metadata.get("reply_count")
+        if reply_count is not None and reply_count > 0:
+            meta_parts.append(f"**Replies**: {reply_count}")
+        if meta_parts:
+            lines.append(f"> {' · '.join(meta_parts)}")
     else:
         # Generic attribution block
         meta_parts = [f"**Source**: {source_ref}"]
