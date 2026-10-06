@@ -106,12 +106,62 @@ from tracker import DeduplicationTracker, IngestionAction
 # Test Helpers & Fixtures
 # ---------------------------------------------------------------------------
 
+class MockResponse(dict):
+    """Mock HTTP response matching httplib2.Response shape for MediaIoBaseDownload."""
+
+    def __init__(self, status: int = 200, **headers: Any) -> None:
+        super().__init__(**headers)
+        self.status = status
+
+
 class MockDriveRequest:
-    """Mock Google API HTTP request with an execute() method."""
+    """Mock Google API HTTP request with execute() and MediaIoBaseDownload support."""
 
     def __init__(self, return_value: Any = None, side_effect: Optional[Exception] = None) -> None:
         self.return_value = return_value
         self.side_effect = side_effect
+        self.uri = "https://www.googleapis.com/drive/v3/files/mock?alt=media"
+        self.headers: Dict[str, str] = {}
+        self.http = MagicMock()
+        self._pos = 0
+
+        raw_bytes = b""
+        if isinstance(return_value, bytes):
+            raw_bytes = return_value
+        elif isinstance(return_value, str):
+            raw_bytes = return_value.encode("utf-8")
+        elif isinstance(return_value, bytearray):
+            raw_bytes = bytes(return_value)
+
+        self._raw_bytes = raw_bytes
+
+        def fake_request(
+            uri: str,
+            method: str = "GET",
+            body: Any = None,
+            headers: Optional[Dict[str, str]] = None,
+            **kwargs: Any,
+        ) -> Tuple[MockResponse, bytes]:
+            if self.side_effect:
+                raise self.side_effect
+            range_header = (headers or {}).get("range", "")
+            start = self._pos
+            end = len(self._raw_bytes)
+            if range_header.startswith("bytes="):
+                parts = range_header[6:].split("-")
+                start = int(parts[0])
+                if parts[1]:
+                    end = min(int(parts[1]) + 1, len(self._raw_bytes))
+
+            chunk = self._raw_bytes[start:end]
+            self._pos = end
+            resp = MockResponse(
+                status=206 if range_header else 200,
+                **{"content-range": f"bytes {start}-{max(start, end - 1)}/{len(self._raw_bytes)}"},
+            )
+            return resp, chunk
+
+        self.http.request.side_effect = fake_request
 
     def execute(self) -> Any:
         if self.side_effect:
@@ -328,6 +378,12 @@ class TestGoogleDriveHelpers:
         md = format_slides_to_markdown("")
         assert "*Empty presentation.*" in md
 
+    def test_format_slides_to_markdown_bounded_chars(self) -> None:
+        slide_text = "Slide 1 Content\x0cSlide 2 Content\x0cSlide 3 Content"
+        md = format_slides_to_markdown(slide_text, max_chars=30)
+        assert "## Slide 1" in md
+        assert "## Slide 3" not in md
+
     def test_extract_pdf_text_safely_with_valid_pdf(self) -> None:
         pdf_bytes = create_minimal_pdf_bytes("Aurora PDF Ingestion Success")
         extracted = extract_pdf_text_safely(pdf_bytes)
@@ -469,6 +525,61 @@ class TestGoogleDriveAuthentication:
                 mock_flow.run_local_server.assert_called_once()
                 mock_creds.to_json.assert_called_once()
 
+    def test_from_authorized_user_file_error_redacts_secrets(self, tmp_path: Path) -> None:
+        token_file = tmp_path / "token.json"
+        token_file.write_text(json.dumps({"token": "fake"}))
+
+        raw_err = "Failed reading token: ya29.a0ARsecretToken12345 with client_secret=GOCSPX-abc123secret"
+        with patch("google.oauth2.credentials.Credentials.from_authorized_user_file", side_effect=Exception(raw_err)):
+            source = GoogleDriveSource(token_path=token_file)
+            with pytest.raises(SourceError) as exc_info:
+                source._get_service()
+
+            err_msg = str(exc_info.value)
+            assert "Failed to load or refresh Google Drive OAuth token" in err_msg
+            assert "ya29.a0ARsecretToken12345" not in err_msg
+            assert "GOCSPX-abc123secret" not in err_msg
+            assert "[REDACTED]" in err_msg
+
+    def test_refresh_token_error_redacts_secrets(self, tmp_path: Path) -> None:
+        token_file = tmp_path / "token.json"
+        token_file.write_text(json.dumps({"token": "expired"}))
+
+        mock_creds = MagicMock(valid=False, expired=True, refresh_token="has_refresh")
+        raw_err = "invalid_grant: refresh_token='1//04fake_secret_refresh_token' was revoked"
+        mock_creds.refresh.side_effect = Exception(raw_err)
+
+        with patch("google.oauth2.credentials.Credentials.from_authorized_user_file", return_value=mock_creds):
+            with patch("google.auth.transport.requests.Request"):
+                source = GoogleDriveSource(token_path=token_file)
+                with pytest.raises(SourceError) as exc_info:
+                    source._get_service()
+
+                err_msg = str(exc_info.value)
+                assert "Failed to load or refresh Google Drive OAuth token" in err_msg
+                assert "1//04fake_secret_refresh_token" not in err_msg
+                assert "[REDACTED]" in err_msg
+
+    def test_installed_app_flow_error_redacts_secrets(self, tmp_path: Path) -> None:
+        creds_file = tmp_path / "credentials.json"
+        creds_file.write_text(json.dumps({"installed": {"client_id": "test_id"}}))
+        token_file = tmp_path / "token.json"
+
+        mock_flow = MagicMock()
+        raw_err = "Flow failed with client_secret='GOCSPX-flowSecret' and code='4/0fake_code'"
+        mock_flow.run_local_server.side_effect = Exception(raw_err)
+
+        with patch("google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file", return_value=mock_flow):
+            source = GoogleDriveSource(credentials_path=creds_file, token_path=token_file)
+            with pytest.raises(SourceError) as exc_info:
+                source._get_service()
+
+            err_msg = str(exc_info.value)
+            assert "Google Drive OAuth authorization failed" in err_msg
+            assert "GOCSPX-flowSecret" not in err_msg
+            assert "4/0fake_code" not in err_msg
+            assert "[REDACTED]" in err_msg
+
 
 # ---------------------------------------------------------------------------
 # 4. Discovery Tests
@@ -565,6 +676,105 @@ class TestGoogleDriveDiscovery:
         doc2 = next(f for f in files if f["id"] == "doc2")
         assert doc1["drive_path"] == "Root"
         assert doc2["drive_path"] == "Root/SubFolder"
+
+    def test_discover_files_passes_shared_drive_parameters(self, mock_service: MockDriveService) -> None:
+        mock_service.files().list_mock.return_value = {
+            "files": [{"id": "d1", "name": "SharedDoc", "mimeType": DOC_MIME}],
+            "nextPageToken": None,
+        }
+        source = GoogleDriveSource(service=mock_service)
+        source._discover_files_in_folder("folder_123", "", set())
+        call_kwargs = mock_service.files().list_mock.call_args[1]
+        assert call_kwargs.get("supportsAllDrives") is True
+        assert call_kwargs.get("includeItemsFromAllDrives") is True
+
+    def test_discover_all_accessible_files_passes_shared_drive_parameters_default(self, mock_service: MockDriveService) -> None:
+        mock_service.files().list_mock.return_value = {
+            "files": [{"id": "d1", "name": "SharedDoc", "mimeType": DOC_MIME}],
+            "nextPageToken": None,
+        }
+        source = GoogleDriveSource(service=mock_service)
+        source._discover_all_accessible_files()
+        call_kwargs = mock_service.files().list_mock.call_args[1]
+        assert call_kwargs.get("supportsAllDrives") is True
+        assert call_kwargs.get("includeItemsFromAllDrives") is True
+        assert "corpora" not in call_kwargs
+
+    def test_discover_all_accessible_files_with_explicit_drive_id(self, mock_service: MockDriveService) -> None:
+        mock_service.files().list_mock.return_value = {
+            "files": [{"id": "d1", "name": "SharedDoc", "mimeType": DOC_MIME}],
+            "nextPageToken": None,
+        }
+        source = GoogleDriveSource(service=mock_service, drive_id="shared_team_drive_123")
+        source._discover_all_accessible_files()
+        call_kwargs = mock_service.files().list_mock.call_args[1]
+        assert call_kwargs.get("supportsAllDrives") is True
+        assert call_kwargs.get("includeItemsFromAllDrives") is True
+        assert call_kwargs.get("corpora") == "drive"
+        assert call_kwargs.get("driveId") == "shared_team_drive_123"
+
+    @pytest.mark.asyncio
+    async def test_deduplicate_overlapping_folders_processes_file_once(self, mock_service: MockDriveService) -> None:
+        def list_side_effect(q: str, **kwargs: Any) -> Dict[str, Any]:
+            if "'folder_parent' in parents" in q:
+                return {
+                    "files": [
+                        {"id": "doc_shared", "name": "Shared Doc", "mimeType": DOC_MIME},
+                        {"id": "doc_parent", "name": "Parent Doc", "mimeType": DOC_MIME},
+                    ],
+                    "nextPageToken": None,
+                }
+            elif "'folder_child' in parents" in q:
+                return {
+                    "files": [
+                        {"id": "doc_shared", "name": "Shared Doc", "mimeType": DOC_MIME},
+                        {"id": "doc_child", "name": "Child Doc", "mimeType": DOC_MIME},
+                    ],
+                    "nextPageToken": None,
+                }
+            return {"files": [], "nextPageToken": None}
+
+        mock_service.files().list_mock.side_effect = list_side_effect
+        mock_service.files().export_mock.return_value = b"# Content"
+
+        source = GoogleDriveSource(service=mock_service, folder_id=["folder_parent", "folder_child"])
+        with patch.object(source, "_process_single_file", wraps=source._process_single_file) as spy_process:
+            items = await source.fetch_items()
+
+        # Exactly 3 unique items produced
+        assert len(items) == 3
+        assert {item.source_id for item in items} == {"gdrive:doc_shared", "gdrive:doc_parent", "gdrive:doc_child"}
+        # _process_single_file was called exactly 3 times (doc_shared processed once)
+        assert spy_process.call_count == 3
+        shared_calls = [c for c in spy_process.call_args_list if c[0][0]["id"] == "doc_shared"]
+        assert len(shared_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_deduplicate_candidate_files_before_applying_limit(self, mock_service: MockDriveService) -> None:
+        def list_side_effect(q: str, **kwargs: Any) -> Dict[str, Any]:
+            if "'folder_a' in parents" in q:
+                return {
+                    "files": [{"id": "f_dup", "name": "Dup File", "mimeType": DOC_MIME}],
+                    "nextPageToken": None,
+                }
+            elif "'folder_b' in parents" in q:
+                return {
+                    "files": [
+                        {"id": "f_dup", "name": "Dup File", "mimeType": DOC_MIME},
+                        {"id": "f_other", "name": "Other File", "mimeType": DOC_MIME},
+                    ],
+                    "nextPageToken": None,
+                }
+            return {"files": [], "nextPageToken": None}
+
+        mock_service.files().list_mock.side_effect = list_side_effect
+        mock_service.files().export_mock.return_value = b"# Content"
+
+        source = GoogleDriveSource(service=mock_service, folder_id=["folder_a", "folder_b"])
+        # With limit=2, deduplication before limit ensures f_dup and f_other are both processed
+        items = await source.fetch_items(limit=2)
+        assert len(items) == 2
+        assert {item.source_id for item in items} == {"gdrive:f_dup", "gdrive:f_other"}
 
 
 # ---------------------------------------------------------------------------
@@ -754,6 +964,67 @@ class TestGoogleDriveLimits:
         assert len(truncated) > 50  # 50 chars + truncation notice
         assert "Content truncated: extracted text exceeded maximum content limit" in truncated
 
+    def test_download_binary_content_aborts_during_chunk_stream_with_unknown_size(self, mock_service: MockDriveService) -> None:
+        source = GoogleDriveSource(service=mock_service, max_file_size=1000)
+        mock_req = MagicMock(uri="https://www.googleapis.com/drive/v3/files/f_stream?alt=media", http=MagicMock())
+        mock_service._files.get_media = lambda **kw: mock_req
+
+        with patch("sources.google_drive_source.MediaIoBaseDownload") as mock_downloader_cls:
+            mock_downloader = MagicMock()
+
+            def fake_init(buf, req, chunksize=None):
+                buf.write(b"X" * 1500)
+                return mock_downloader
+
+            mock_downloader_cls.return_value = mock_downloader
+            mock_downloader_cls.side_effect = fake_init
+            mock_downloader.next_chunk.return_value = (None, False)
+
+            with pytest.raises(SourceError) as exc_info:
+                # Metadata size is None (unknown)
+                source._download_binary_content("f_stream", "oversized.pdf", file_size=None)
+
+            assert "exceeded maximum allowed size limit" in str(exc_info.value)
+            assert "1,000 bytes" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_download_binary_content_aborts_in_fetch_items_and_no_attachment_produced(self, mock_service: MockDriveService) -> None:
+        mock_service.files().list_mock.return_value = {
+            "files": [
+                {"id": "oversized_pdf", "name": "Large.pdf", "mimeType": PDF_MIME, "size": None},
+            ],
+            "nextPageToken": None,
+        }
+        mock_req = MagicMock(uri="https://www.googleapis.com/drive/v3/files/oversized_pdf?alt=media", http=MagicMock())
+        mock_service._files.get_media = lambda **kw: mock_req
+
+        with patch("sources.google_drive_source.MediaIoBaseDownload") as mock_downloader_cls:
+            mock_downloader = MagicMock()
+
+            def fake_init(buf, req, chunksize=None):
+                buf.write(b"Y" * 2000)
+                return mock_downloader
+
+            mock_downloader_cls.return_value = mock_downloader
+            mock_downloader_cls.side_effect = fake_init
+            mock_downloader.next_chunk.return_value = (None, False)
+
+            source = GoogleDriveSource(service=mock_service, max_file_size=1000)
+            items = await source.fetch_items()
+            # File should be skipped due to size violation, zero items and zero attachments returned
+            assert len(items) == 0
+
+    def test_download_binary_content_does_not_call_request_execute(self, mock_service: MockDriveService) -> None:
+        mock_service.files().get_media_mock.return_value = b"Chunked binary data via MediaIoBaseDownload"
+        source = GoogleDriveSource(service=mock_service)
+        mock_req = mock_service.files().get_media()
+        mock_req.execute = MagicMock()
+        mock_service.files().get_media_mock.return_value = mock_req
+
+        content = source._download_binary_content("f_bin", "file.bin", 100)
+        assert content == b"Chunked binary data via MediaIoBaseDownload"
+        mock_req.execute.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # 7. Fault Isolation & Batch Resilience Tests
@@ -889,6 +1160,51 @@ class TestGoogleDriveAttribution:
         assert att_path.exists()
         assert att_path.read_bytes() == pdf_bytes
 
+    def test_two_same_named_drive_attachments_handled_safely_without_collision(
+        self,
+        mock_service: MockDriveService,
+        temp_vault: Path,
+        temp_config: IngestionConfig,
+    ) -> None:
+        source = GoogleDriveSource(service=mock_service)
+        file_meta1 = {"id": "f_pdf_1", "name": "report.pdf", "mimeType": PDF_MIME, "size": 100}
+        file_meta2 = {"id": "f_pdf_2", "name": "report.pdf", "mimeType": PDF_MIME, "size": 100}
+
+        def fake_download(file_id: str, file_name: str, file_size: Optional[int]) -> bytes:
+            if file_id == "f_pdf_1":
+                return b"%PDF-1.4 Report 1 Content"
+            return b"%PDF-1.4 Report 2 Content Different"
+
+        source._download_binary_content = fake_download  # type: ignore
+
+        item1 = source._process_single_file(file_meta1)
+        item2 = source._process_single_file(file_meta2)
+
+        assert len(item1.attachments) == 1
+        assert len(item2.attachments) == 1
+        assert item1.attachments[0].filename == "report.pdf"
+        assert item2.attachments[0].filename == "report.pdf"
+
+        note1 = source.default_item_to_note(item1)
+        note2 = source.default_item_to_note(item2)
+
+        # Write both notes to vault
+        write_note_to_vault(note1, temp_vault, attachments=item1.attachments, config=temp_config)
+        write_note_to_vault(note2, temp_vault, attachments=item2.attachments, config=temp_config)
+
+        att_dir = temp_vault / "Attachments" / "Ingested"
+        att1_path = att_dir / "report.pdf"
+        att2_path = att_dir / "report_2.pdf"
+
+        assert att1_path.exists()
+        assert att2_path.exists()
+        assert att1_path.read_bytes() == b"%PDF-1.4 Report 1 Content"
+        assert att2_path.read_bytes() == b"%PDF-1.4 Report 2 Content Different"
+
+        # Check embeddings in notes
+        assert "![[report.pdf]]" in note1.body
+        assert "![[report_2.pdf]]" in note2.body
+
 
 # ---------------------------------------------------------------------------
 # 10. End-to-End Pipeline & Tracker Tests
@@ -967,6 +1283,7 @@ class TestGoogleDriveRegistryAndCLI:
             "--folder-id", "f2",
             "--credentials", "/path/to/creds.json",
             "--token", "/path/to/token.json",
+            "--drive-id", "shared_drive_team_456",
             "--max-file-size", "25000000",
             "--max-content-size", "200000",
             "--limit", "15",
@@ -975,6 +1292,7 @@ class TestGoogleDriveRegistryAndCLI:
         assert args.folder_id == ["f1", "f2"]
         assert args.credentials == "/path/to/creds.json"
         assert args.token == "/path/to/token.json"
+        assert args.drive_id == "shared_drive_team_456"
         assert args.max_file_size == 25000000
         assert args.max_content_size == 200000
         assert args.limit == 15
@@ -985,11 +1303,13 @@ class TestGoogleDriveRegistryAndCLI:
             "ingest",
             "--source", "google-drive",
             "--folder-ids", "f1,f2",
+            "--drive-id", "shared_drive_team_456",
             "--max-content-size", "300000",
         ])
         assert args.command == "ingest"
         assert args.source == "google-drive"
         assert args.folder_ids == "f1,f2"
+        assert args.drive_id == "shared_drive_team_456"
         assert args.max_content_size == 300000
 
     @pytest.mark.asyncio
@@ -1246,3 +1566,21 @@ class TestGoogleDriveEdgeCasesAndHardening:
         source = GoogleDriveSource(service=mock_service)
         items = await source.fetch_items(limit=2)
         assert len(items) == 2
+
+    def test_download_binary_content_media_io_base_download(self, mock_service: MockDriveService) -> None:
+        source = GoogleDriveSource(service=mock_service)
+        mock_req = MagicMock(uri="https://www.googleapis.com/drive/v3/files/f1?alt=media", http=MagicMock())
+        mock_service._files.get_media = lambda **kw: mock_req
+
+        with patch("sources.google_drive_source.MediaIoBaseDownload") as mock_downloader_cls:
+            mock_downloader = MagicMock()
+            mock_downloader.next_chunk.side_effect = [(None, False), (None, True)]
+
+            def fake_init(buf, req, chunksize=None):
+                buf.write(b"chunked content from media_io")
+                return mock_downloader
+
+            mock_downloader_cls.return_value = mock_downloader
+            mock_downloader_cls.side_effect = fake_init
+            content = source._download_binary_content("f1", "file.bin", 500)
+            assert content == b"chunked content from media_io"

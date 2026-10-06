@@ -418,6 +418,10 @@ def create_parser() -> argparse.ArgumentParser:
         type=int,
         help="Maximum extracted content size in characters (e.g. for Google Drive)",
     )
+    ingest_parser.add_argument(
+        "--drive-id",
+        help="Google Drive shared drive ID to ingest from",
+    )
 
     # Command: ingest-web
     ingest_web_parser = subparsers.add_parser("ingest-web", help="Shortcut to ingest a webpage by URL")
@@ -875,6 +879,10 @@ def create_parser() -> argparse.ArgumentParser:
         help="Maximum extracted content size in characters (default: 500,000)",
     )
     ingest_gdrive_parser.add_argument(
+        "--drive-id",
+        help="Google Drive shared drive ID to ingest from",
+    )
+    ingest_gdrive_parser.add_argument(
         "--limit",
         type=int,
         help="Maximum files to ingest",
@@ -1117,6 +1125,8 @@ async def async_main(args: argparse.Namespace) -> int:
                 kwargs["credentials"] = args.credentials
             if getattr(args, "max_content_size", None) is not None:
                 kwargs["max_content_size"] = args.max_content_size
+            if getattr(args, "drive_id", None):
+                kwargs["drive_id"] = args.drive_id
 
             try:
                 stats = await pipeline.run_source(source_name, **kwargs)

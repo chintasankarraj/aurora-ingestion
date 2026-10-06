@@ -42,6 +42,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, Union
+from googleapiclient.http import MediaIoBaseDownload
 
 from markdownify import markdownify
 
@@ -125,24 +126,25 @@ def format_csv_to_markdown_table(
 
     try:
         reader = csv.reader(io.StringIO(csv_content))
-        raw_rows = list(reader)
+        rows: List[List[str]] = []
+        total_rows = 0
+        for r in reader:
+            total_rows += 1
+            if len(rows) < max_rows:
+                rows.append(r)
     except Exception as e:
         return f"*Error parsing spreadsheet CSV: {e}*", False
 
-    if not raw_rows:
+    if not rows:
         return "*Empty spreadsheet.*", False
 
-    total_rows = len(raw_rows)
     is_truncated = False
     trunc_notes = []
 
     # Row truncation
     if total_rows > max_rows:
-        rows = raw_rows[:max_rows]
         is_truncated = True
         trunc_notes.append(f"showing first {max_rows} of {total_rows} rows")
-    else:
-        rows = raw_rows
 
     # Col truncation
     max_actual_cols = max((len(r) for r in rows), default=0)
@@ -182,7 +184,7 @@ def format_csv_to_markdown_table(
     return table_md, is_truncated
 
 
-def format_slides_to_markdown(raw_text: str) -> str:
+def format_slides_to_markdown(raw_text: str, max_chars: Optional[int] = None) -> str:
     """Convert exported presentation plain text into readable Markdown slides.
 
     Google Drive presentation plain text export separates slides with form-feed characters (\x0c or \f).
@@ -202,6 +204,7 @@ def format_slides_to_markdown(raw_text: str) -> str:
 
     slides_md: List[str] = []
     slide_index = 1
+    current_length = 0
     for slide_text in raw_slides:
         cleaned = slide_text.strip()
         if not cleaned:
@@ -212,12 +215,17 @@ def format_slides_to_markdown(raw_text: str) -> str:
             header_title = slide_lines[0][:60]
             body_text = "\n\n".join(slide_lines[1:])
             if body_text:
-                slides_md.append(f"## Slide {slide_index} — {header_title}\n\n{body_text}")
+                slide_md = f"## Slide {slide_index} — {header_title}\n\n{body_text}"
             else:
-                slides_md.append(f"## Slide {slide_index} — {header_title}")
+                slide_md = f"## Slide {slide_index} — {header_title}"
         else:
-            slides_md.append(f"## Slide {slide_index}\n\n*Empty slide.*")
+            slide_md = f"## Slide {slide_index}\n\n*Empty slide.*"
+
+        slides_md.append(slide_md)
+        current_length += len(slide_md) + 2
         slide_index += 1
+        if max_chars is not None and current_length >= max_chars:
+            break
 
     if not slides_md:
         return "*Empty presentation.*"
@@ -248,14 +256,39 @@ def extract_pdf_text_safely(pdf_bytes: bytes) -> str:
     return ""
 
 
+def sanitize_secret_error_message(err: Union[str, Exception]) -> str:
+    """Sanitize error messages to prevent exposing OAuth tokens, secrets, or auth headers."""
+    err_str = str(err)
+    patterns: List[Tuple[str, str]] = [
+        # Google OAuth access tokens
+        (r"ya29\.[a-zA-Z0-9_\-\.]+", "[REDACTED]"),
+        # Google refresh tokens
+        (r"1//[a-zA-Z0-9_\-]+", "[REDACTED]"),
+        # Google client secrets (GOCSPX prefix)
+        (r"GOCSPX-[a-zA-Z0-9_\-]+", "[REDACTED]"),
+        # Bearer tokens in headers
+        (r"(?i)bearer\s+[a-zA-Z0-9_\-\.]+", "Bearer [REDACTED]"),
+        # Authorization header
+        (r"(?i)authorization:\s*[^\s,]+", "Authorization: [REDACTED]"),
+        # Query parameters with secrets/tokens
+        (r"(?i)(client_secret|refresh_token|access_token|token|code)=([^&\s]+)", r"\1=[REDACTED]"),
+        # JSON / Dict key-value pairs
+        (
+            r"""(?i)(["']?(?:client_secret|refresh_token|access_token|token|secret)["']?\s*[:=]\s*["']?)([^"'\s,{}]+)(["']?)""",
+            r"\1[REDACTED]\3",
+        ),
+    ]
+    for pattern, repl in patterns:
+        err_str = re.sub(pattern, repl, err_str)
+    return err_str
+
+
 def map_google_drive_error(err: Exception) -> SourceError:
     """Map Google API HttpError and transport exceptions into clean, actionable SourceErrors.
 
     Guarantees that sensitive tokens, client secrets, and auth headers are never leaked.
     """
-    err_str = str(err)
-    # Strip any potential tokens or secrets from error string
-    clean_err_str = re.sub(r'(ya29\.[a-zA-Z0-9_-]+|bearer\s+[a-zA-Z0-9_-]+)', '[REDACTED]', err_str, flags=re.IGNORECASE)
+    clean_err_str = sanitize_secret_error_message(err)
 
     status_code: Optional[int] = None
     if hasattr(err, "resp") and hasattr(err.resp, "status"):
@@ -313,6 +346,7 @@ class GoogleDriveSource(BaseSource):
         max_file_size: Optional[int] = None,
         max_content_size: Optional[int] = None,
         limit: Optional[int] = None,
+        drive_id: Optional[str] = None,
     ) -> None:
         super().__init__()
         self._service = service
@@ -327,6 +361,13 @@ class GoogleDriveSource(BaseSource):
             self.folder_ids = [str(fid).strip() for fid in raw_folders if str(fid).strip()]
         else:
             self.folder_ids = []
+
+        # Shared Drive ID
+        self.drive_id = (
+            drive_id
+            or os.getenv("GOOGLE_DRIVE_SHARED_DRIVE_ID")
+            or os.getenv("GOOGLE_DRIVE_DRIVE_ID")
+        )
 
         # File size limits
         size_env = os.getenv("GOOGLE_DRIVE_MAX_FILE_SIZE")
@@ -367,7 +408,8 @@ class GoogleDriveSource(BaseSource):
                     json_data = creds.to_json()
                     token_p.write_text(str(json_data) if not isinstance(json_data, str) else json_data, encoding="utf-8")
             except Exception as e:
-                raise SourceError(f"Failed to load or refresh Google Drive OAuth token: {e}") from e
+                sanitized_msg = sanitize_secret_error_message(e)
+                raise SourceError(f"Failed to load or refresh Google Drive OAuth token: {sanitized_msg}") from e
 
         elif creds_p.exists():
             try:
@@ -378,7 +420,8 @@ class GoogleDriveSource(BaseSource):
                 json_data = creds.to_json()
                 token_p.write_text(str(json_data) if not isinstance(json_data, str) else json_data, encoding="utf-8")
             except Exception as e:
-                raise SourceError(f"Google Drive OAuth authorization failed: {e}") from e
+                sanitized_msg = sanitize_secret_error_message(e)
+                raise SourceError(f"Google Drive OAuth authorization failed: {sanitized_msg}") from e
 
         else:
             raise SourceError(
@@ -391,7 +434,8 @@ class GoogleDriveSource(BaseSource):
             self._service = build("drive", "v3", credentials=creds)
             return self._service
         except Exception as e:
-            raise SourceError(f"Failed to build Google Drive API service client: {e}") from e
+            sanitized_msg = sanitize_secret_error_message(e)
+            raise SourceError(f"Failed to build Google Drive API service client: {sanitized_msg}") from e
 
     def _discover_files_in_folder(
         self,
@@ -414,12 +458,15 @@ class GoogleDriveSource(BaseSource):
 
         while True:
             try:
-                request = service.files().list(
-                    q=q,
-                    pageSize=100,
-                    pageToken=page_token,
-                    fields="nextPageToken, files(id, name, mimeType, modifiedTime, createdTime, size, version, md5Checksum, webViewLink, parents, owners, description)",
-                )
+                list_kwargs: Dict[str, Any] = {
+                    "q": q,
+                    "pageSize": 100,
+                    "pageToken": page_token,
+                    "fields": "nextPageToken, files(id, name, mimeType, modifiedTime, createdTime, size, version, md5Checksum, webViewLink, parents, owners, description)",
+                    "supportsAllDrives": True,
+                    "includeItemsFromAllDrives": True,
+                }
+                request = service.files().list(**list_kwargs)
                 response = request.execute()
             except Exception as e:
                 raise map_google_drive_error(e)
@@ -460,12 +507,19 @@ class GoogleDriveSource(BaseSource):
 
         while True:
             try:
-                request = service.files().list(
-                    q=q,
-                    pageSize=100,
-                    pageToken=page_token,
-                    fields="nextPageToken, files(id, name, mimeType, modifiedTime, createdTime, size, version, md5Checksum, webViewLink, parents, owners, description)",
-                )
+                list_kwargs: Dict[str, Any] = {
+                    "q": q,
+                    "pageSize": 100,
+                    "pageToken": page_token,
+                    "fields": "nextPageToken, files(id, name, mimeType, modifiedTime, createdTime, size, version, md5Checksum, webViewLink, parents, owners, description)",
+                    "supportsAllDrives": True,
+                    "includeItemsFromAllDrives": True,
+                }
+                if self.drive_id:
+                    list_kwargs["corpora"] = "drive"
+                    list_kwargs["driveId"] = self.drive_id
+
+                request = service.files().list(**list_kwargs)
                 response = request.execute()
             except Exception as e:
                 raise map_google_drive_error(e)
@@ -475,9 +529,6 @@ class GoogleDriveSource(BaseSource):
                 item_meta = dict(f)
                 item_meta["drive_path"] = f.get("drive_path") or "My Drive"
                 discovered.append(item_meta)
-
-                if self.limit and len(discovered) >= self.limit:
-                    return discovered[:self.limit]
 
             page_token = response.get("nextPageToken")
             if not page_token or page_token in seen_page_tokens:
@@ -489,12 +540,16 @@ class GoogleDriveSource(BaseSource):
     def _export_google_doc(self, file_id: str) -> str:
         """Export a Google Doc to clean Markdown via HTML export."""
         service = self._get_service()
+        early_bound = max(self.max_content_size * 4, 1_000_000)
         try:
             html_content = service.files().export(fileId=file_id, mimeType="text/html").execute()
             if isinstance(html_content, bytes):
                 html_text = html_content.decode("utf-8", errors="replace")
             else:
                 html_text = str(html_content)
+
+            if len(html_text) > early_bound:
+                html_text = html_text[:early_bound]
 
             md = markdownify(html_text, heading_style="ATX", strip=["script", "style"])
             return md.strip()
@@ -503,8 +558,13 @@ class GoogleDriveSource(BaseSource):
             try:
                 plain_content = service.files().export(fileId=file_id, mimeType="text/plain").execute()
                 if isinstance(plain_content, bytes):
-                    return plain_content.decode("utf-8", errors="replace").strip()
-                return str(plain_content).strip()
+                    plain_text = plain_content.decode("utf-8", errors="replace").strip()
+                else:
+                    plain_text = str(plain_content).strip()
+
+                if len(plain_text) > early_bound:
+                    plain_text = plain_text[:early_bound]
+                return plain_text
             except Exception as e:
                 raise map_google_drive_error(e)
 
@@ -534,12 +594,17 @@ class GoogleDriveSource(BaseSource):
             else:
                 raw_text = str(text_content)
 
-            return format_slides_to_markdown(raw_text)
+            return format_slides_to_markdown(raw_text, max_chars=self.max_content_size * 2)
         except Exception as e:
             raise map_google_drive_error(e)
 
-    def _download_binary_content(self, file_id: str, file_name: str, file_size: Optional[int]) -> bytes:
-        """Download binary content of a file with size limits enforcement."""
+    def _download_binary_content(
+        self,
+        file_id: str,
+        file_name: str,
+        file_size: Optional[int],
+    ) -> bytes:
+        """Download binary content in chunks using MediaIoBaseDownload with size-limit enforcement."""
         if file_size is not None and file_size > self.max_file_size:
             raise SourceError(
                 f"File '{file_name}' ({file_size:,} bytes) exceeds maximum allowed size limit ({self.max_file_size:,} bytes)."
@@ -547,13 +612,27 @@ class GoogleDriveSource(BaseSource):
 
         service = self._get_service()
         try:
-            content = service.files().get_media(fileId=file_id).execute()
-            if isinstance(content, str):
-                return content.encode("utf-8")
-            return bytes(content)
+            request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
+        except TypeError:
+            request = service.files().get_media(fileId=file_id)
+
+        buffer = io.BytesIO()
+        try:
+            downloader = MediaIoBaseDownload(buffer, request, chunksize=CHUNK_SIZE_BYTES)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+                if buffer.tell() > self.max_file_size:
+                    raise SourceError(
+                        f"File '{file_name}' exceeded maximum allowed size limit ({self.max_file_size:,} bytes) during download."
+                    )
+            return buffer.getvalue()
+        except SourceError:
+            raise
         except Exception as e:
             raise map_google_drive_error(e)
-
+        finally:
+            buffer.close()
     def _truncate_content_if_needed(self, text: str) -> str:
         """Enforce maximum content size limits with clear truncation notices."""
         if not text:
@@ -717,6 +796,10 @@ class GoogleDriveSource(BaseSource):
             self.credentials_path = str(kwargs["credentials"])
         if kwargs.get("token"):
             self.token_path = str(kwargs["token"])
+        if kwargs.get("drive_id"):
+            self.drive_id = str(kwargs["drive_id"])
+        elif kwargs.get("shared_drive_id"):
+            self.drive_id = str(kwargs["shared_drive_id"])
         if kwargs.get("max_file_size") is not None:
             self.max_file_size = int(kwargs["max_file_size"])
         if kwargs.get("max_content_size") is not None:
@@ -755,7 +838,25 @@ class GoogleDriveSource(BaseSource):
             key=lambda f: (f.get("drive_path", ""), f.get("name", ""), f.get("id", ""))
         )
 
-        # 3. Apply limit if configured
+        # 3. Deduplicate by Drive file ID before applying limit, preserving first deterministic occurrence
+        seen_file_ids: Dict[str, Dict[str, Any]] = {}
+        unique_candidates: List[Dict[str, Any]] = []
+        for f in candidate_files:
+            fid = f.get("id")
+            if not fid:
+                continue
+            if fid not in seen_file_ids:
+                seen_file_ids[fid] = f
+                unique_candidates.append(f)
+            else:
+                # If existing entry has empty/generic drive_path and this one has a specific path, preserve richer path
+                existing = seen_file_ids[fid]
+                if (not existing.get("drive_path") or existing.get("drive_path") == "My Drive") and f.get("drive_path") and f.get("drive_path") != "My Drive":
+                    existing["drive_path"] = f["drive_path"]
+
+        candidate_files = unique_candidates
+
+        # 4. Apply limit if configured
         if self.limit and self.limit > 0:
             candidate_files = candidate_files[:self.limit]
 
