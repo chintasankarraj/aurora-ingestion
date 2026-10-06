@@ -437,6 +437,28 @@ def build_attribution_block(note: MarkdownNote) -> str:
             meta_parts.append(f"**Date**: {date_str}")
         if meta_parts:
             lines.append(f"> {' · '.join(meta_parts)}")
+    elif note.source in {"google-drive", "google_drive", "gdrive"}:
+        file_name = note.extra_metadata.get("drive_file_name") or note.title or "Google Drive Document"
+        source_url = note.source_url or ""
+        source_ref = f"[Google Drive — {file_name}]({source_url})" if source_url else f"Google Drive — {file_name}"
+        lines.append(f"> **Source**: {source_ref}")
+        meta_parts = []
+        file_id = note.extra_metadata.get("drive_file_id")
+        if file_id:
+            meta_parts.append(f"**Drive ID**: `{file_id}`")
+        mime = note.extra_metadata.get("mime_type")
+        if mime:
+            meta_parts.append(f"**Type**: `{mime}`")
+        drive_path = note.extra_metadata.get("drive_path")
+        if drive_path:
+            meta_parts.append(f"**Path**: `{drive_path}`")
+        if note.author:
+            meta_parts.append(f"**Author**: {note.author}")
+        date_str = extract_date_prefix(note.date)
+        if date_str:
+            meta_parts.append(f"**Modified**: {date_str}")
+        if meta_parts:
+            lines.append(f"> {' · '.join(meta_parts)}")
     else:
         # Generic attribution block
         meta_parts = [f"**Source**: {source_ref}"]

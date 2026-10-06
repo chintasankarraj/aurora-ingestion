@@ -4,6 +4,7 @@ from sources.base import BaseSource, SourceRegistry, async_retry
 from sources.discord_source import DiscordSource
 from sources.email_source import EmailSource
 from sources.github_source import GitHubSource
+from sources.google_drive_source import GoogleDriveSource
 from sources.instapaper_source import InstapaperSource
 from sources.keep_source import KeepSource
 from sources.notion_source import NotionSource
@@ -38,5 +39,6 @@ __all__ = [
     "TelegramSource",
     "VoiceSource",
     "ScreenshotSource",
+    "GoogleDriveSource",
 ]
 

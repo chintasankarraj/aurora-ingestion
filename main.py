@@ -400,6 +400,24 @@ def create_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Recursively scan subdirectories (for screenshots)",
     )
+    ingest_parser.add_argument(
+        "--folder-id",
+        action="append",
+        help="Google Drive folder ID to ingest (can be repeated)",
+    )
+    ingest_parser.add_argument(
+        "--folder-ids",
+        help="Comma-separated list of Google Drive folder IDs",
+    )
+    ingest_parser.add_argument(
+        "--credentials",
+        help="Path to Google Drive OAuth credentials client secrets JSON file",
+    )
+    ingest_parser.add_argument(
+        "--max-content-size",
+        type=int,
+        help="Maximum extracted content size in characters (e.g. for Google Drive)",
+    )
 
     # Command: ingest-web
     ingest_web_parser = subparsers.add_parser("ingest-web", help="Shortcut to ingest a webpage by URL")
@@ -824,6 +842,44 @@ def create_parser() -> argparse.ArgumentParser:
         help="Maximum allowed image pixels to prevent decompression bombs (default: 100M)",
     )
 
+    # Command: ingest-google-drive
+    ingest_gdrive_parser = subparsers.add_parser(
+        "ingest-google-drive",
+        help="Ingest Google Docs, Sheets, Slides, PDFs, and files from Google Drive",
+    )
+    ingest_gdrive_parser.add_argument(
+        "--folder-id",
+        action="append",
+        help="Google Drive folder ID to ingest (can be repeated)",
+    )
+    ingest_gdrive_parser.add_argument(
+        "--folder-ids",
+        help="Comma-separated list of Google Drive folder IDs",
+    )
+    ingest_gdrive_parser.add_argument(
+        "--credentials",
+        help="Path to Google Drive OAuth credentials client secrets JSON file",
+    )
+    ingest_gdrive_parser.add_argument(
+        "--token",
+        help="Path to Google Drive OAuth authorized user token JSON file",
+    )
+    ingest_gdrive_parser.add_argument(
+        "--max-file-size",
+        type=int,
+        help="Maximum allowed file size in bytes to download (default: 100 MB)",
+    )
+    ingest_gdrive_parser.add_argument(
+        "--max-content-size",
+        type=int,
+        help="Maximum extracted content size in characters (default: 500,000)",
+    )
+    ingest_gdrive_parser.add_argument(
+        "--limit",
+        type=int,
+        help="Maximum files to ingest",
+    )
+
     # Command: status
     status_parser = subparsers.add_parser("status", help="Show deduplication tracker status")
     status_parser.add_argument(
@@ -905,6 +961,8 @@ async def async_main(args: argparse.Namespace) -> int:
             "ingest-telegram",
             "ingest-voice",
             "ingest-screenshots",
+            "ingest-google-drive",
+            "ingest-gdrive",
         }:
             config.validate()
             pipeline = IngestionPipeline(config=config, tracker=tracker)
@@ -938,6 +996,8 @@ async def async_main(args: argparse.Namespace) -> int:
                 source_name = "voice"
             elif args.command == "ingest-screenshots":
                 source_name = "screenshots"
+            elif args.command in ("ingest-google-drive", "ingest-gdrive"):
+                source_name = "google-drive"
             else:
                 source_name = getattr(args, "source", None) or "web"
 
@@ -1049,6 +1109,14 @@ async def async_main(args: argparse.Namespace) -> int:
                 kwargs["max_file_size"] = args.max_file_size
             if getattr(args, "recursive", False):
                 kwargs["recursive"] = True
+            if getattr(args, "folder_id", None):
+                kwargs["folder_id"] = args.folder_id
+            if getattr(args, "folder_ids", None):
+                kwargs["folder_ids"] = args.folder_ids
+            if getattr(args, "credentials", None):
+                kwargs["credentials"] = args.credentials
+            if getattr(args, "max_content_size", None) is not None:
+                kwargs["max_content_size"] = args.max_content_size
 
             try:
                 stats = await pipeline.run_source(source_name, **kwargs)

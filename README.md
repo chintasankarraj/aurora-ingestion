@@ -67,6 +67,7 @@ aurora-ingestion/
 │   ├── telegram_source.py# Telegram bot and chat message connector
 │   ├── voice_source.py   # Voice / Audio local Whisper transcription connector
 │   ├── screenshot_source.py # Screenshots / OCR local Tesseract connector
+│   ├── google_drive_source.py # Google Drive v3 files and docs connector
 │   ├── web_source.py     # Web article connector
 │   └── youtube_source.py # YouTube video connector
 ├── tests/
@@ -78,6 +79,7 @@ aurora-ingestion/
 │   ├── test_discord_source.py # Discord connector tests
 │   ├── test_email_source.py# Email connector tests
 │   ├── test_github_source.py # GitHub connector tests
+│   ├── test_google_drive_source.py # Google Drive connector tests
 │   ├── test_instapaper_source.py # Instapaper connector tests
 │   ├── test_keep_source.py # Google Keep connector tests
 │   ├── test_notion_source.py# Notion connector tests
@@ -1554,7 +1556,25 @@ All 680 unit and integration tests verify:
   - [x] Configurable OCR language (`--ocr-lang`, `SCREENSHOT_OCR_LANG`), timeout (`--ocr-timeout`, `SCREENSHOT_OCR_TIMEOUT`), and custom binary path (`--tesseract-cmd`, `SCREENSHOT_TESSERACT_CMD`)
   - [x] Fault-isolated directory scanning (`--directory`, `--recursive`) skipping bad images without aborting
   - [x] CLI `ingest-screenshots` with positional/flag directory, `--file`, `--files`, `--recursive`, `--ocr-lang`, `--tesseract-cmd`, `--ocr-timeout`, `--max-file-size`, `--max-pixels`, and generic `ingest --source screenshots`
-- [x] 100% test pass rate across all 735 tests (55 dedicated Screenshots / OCR tests).
+- [x] **Google Drive Source Connector** (`sources/google_drive_source.py`):
+  - [x] Official Google Drive API v3 integration with read-only OAuth scope (`https://www.googleapis.com/auth/drive.readonly`)
+  - [x] Authentication via client secrets JSON (`GOOGLE_DRIVE_CREDENTIALS`, `--credentials`) and authorized user token JSON (`GOOGLE_DRIVE_TOKEN`, `--token`) with automatic token refresh
+  - [x] Recursive folder discovery (`--folder-id`, `--folder-ids`, `GOOGLE_DRIVE_FOLDER_ID`) with cycle detection and loop protection
+  - [x] Pagination handling via `nextPageToken` with cycle guards
+  - [x] Google Docs (`application/vnd.google-apps.document`) export to HTML converted to clean ATX Markdown via `markdownify` with fallback to plain text
+  - [x] Google Sheets (`application/vnd.google-apps.spreadsheet`) export to CSV converted to clean bounded Markdown tables (max 100 rows, max 20 columns) with truncation notices
+  - [x] Google Slides (`application/vnd.google-apps.presentation`) export to text converted to structured slide sections (`## Slide N — Title`)
+  - [x] PDF documents (`application/pdf`) downloaded via streaming media, text extracted via PyMuPDF/pdfplumber, original PDF preserved in `Attachments/Ingested/` with `![[filename.pdf]]` embedding, and routed to `Ingested/PDF/`
+  - [x] Text / Code / CSV / JSON files downloaded and rendered into cleanly formatted Markdown notes (JSON in ````json blocks, CSV into Markdown tables)
+  - [x] Unsupported binary files handled gracefully with metadata note and disclaimer without claiming extraction succeeded
+  - [x] Content truncation protection (`--max-content-size`, default 500,000 chars) and preflight file size limits (`--max-file-size`, default 100 MB)
+  - [x] Deterministic identity (`gdrive:<file_id>`) with content hash derived from Drive metadata (`version`, `modifiedTime`, `md5Checksum`, `size`) ensuring rename and move stability
+  - [x] Destination routing: Google Docs, Sheets, Slides, and text notes saved to `Ingested/Web/`; PDFs routed to `Ingested/PDF/`
+  - [x] Attribution block displaying source link, Drive ID, MIME type, folder path, author/owner, and modified date
+  - [x] Security guarantees: tokens, secrets, and auth URLs never logged; token strings redacted from error messages
+  - [x] Fault isolation: individual file failures do not abort batch ingestion
+  - [x] CLI `ingest-google-drive` with `--folder-id`, `--folder-ids`, `--credentials`, `--token`, `--max-file-size`, `--max-content-size`, `--limit`, and generic `ingest --source google-drive`
+- [x] 100% test pass rate across all 808 tests (73 dedicated Google Drive tests).
 
 ### Next Connectors to Implement:
 1. **Tier 3 Connectors**: Twitter/X.
