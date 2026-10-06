@@ -288,26 +288,35 @@ def create_parser() -> argparse.ArgumentParser:
     ingest_parser.add_argument(
         "--channel", "-c",
         action="append",
-        help="Channel to ingest for Slack (can be repeated, e.g. -c general)",
+        help="Channel to ingest for Slack or Discord (can be repeated, e.g. -c general)",
     )
     ingest_parser.add_argument(
         "--channels",
-        help="Comma-separated list of channels for Slack (e.g. general,engineering)",
+        help="Comma-separated list of channels for Slack or Discord (e.g. general,engineering)",
+    )
+    ingest_parser.add_argument(
+        "--guild", "-g",
+        action="append",
+        help="Guild/server ID or name to ingest for Discord (can be repeated, e.g. -g 123456789012345678)",
+    )
+    ingest_parser.add_argument(
+        "--guilds",
+        help="Comma-separated list of guild IDs or names for Discord",
     )
     ingest_parser.add_argument(
         "--max-messages",
         type=int,
-        help="Maximum messages to fetch per channel for Slack",
+        help="Maximum messages to fetch per channel for Slack or Discord",
     )
     ingest_parser.add_argument(
         "--max-replies",
         type=int,
-        help="Maximum replies to fetch per thread for Slack",
+        help="Maximum replies to fetch per thread for Slack or Discord",
     )
     ingest_parser.add_argument(
         "--no-threads",
         action="store_true",
-        help="Do not fetch threaded replies for Slack",
+        help="Do not fetch threaded replies for Slack or Discord",
     )
 
     # Command: ingest-web
@@ -543,6 +552,55 @@ def create_parser() -> argparse.ArgumentParser:
         help="Do not fetch threaded replies",
     )
 
+    # Command: ingest-discord
+    ingest_discord_parser = subparsers.add_parser(
+        "ingest-discord",
+        help="Ingest Discord conversation messages and threads from configured guild channels",
+    )
+    ingest_discord_parser.add_argument(
+        "--guild", "-g",
+        action="append",
+        help="Guild/server ID or name to ingest (can be repeated, e.g. -g 123456789012345678)",
+    )
+    ingest_discord_parser.add_argument(
+        "--guilds",
+        help="Comma-separated list of guild IDs or names (e.g. 123456789012345678,234567890123456789)",
+    )
+    ingest_discord_parser.add_argument(
+        "--channel", "-c",
+        action="append",
+        help="Channel ID or name to ingest (can be repeated, e.g. -c 234567890123456789 or -c general)",
+    )
+    ingest_discord_parser.add_argument(
+        "--channels",
+        help="Comma-separated list of channel IDs or names (e.g. 234567890123456789,general)",
+    )
+    ingest_discord_parser.add_argument(
+        "--token",
+        help="Discord Bot token override (defaults to DISCORD_BOT_TOKEN)",
+    )
+    ingest_discord_parser.add_argument(
+        "--limit",
+        type=int,
+        help="Maximum messages to fetch per channel",
+    )
+    ingest_discord_parser.add_argument(
+        "--max-messages",
+        type=int,
+        help="Maximum messages to fetch per channel (alias for --limit)",
+    )
+    ingest_discord_parser.add_argument(
+        "--max-replies",
+        type=int,
+        default=50,
+        help="Maximum replies to fetch per thread (default: 50)",
+    )
+    ingest_discord_parser.add_argument(
+        "--no-threads",
+        action="store_true",
+        help="Do not fetch threaded replies",
+    )
+
     # Command: status
     status_parser = subparsers.add_parser("status", help="Show deduplication tracker status")
     status_parser.add_argument(
@@ -632,6 +690,8 @@ async def async_main(args: argparse.Namespace) -> int:
                 source_name = "reddit"
             elif args.command == "ingest-slack":
                 source_name = "slack"
+            elif args.command == "ingest-discord":
+                source_name = "discord"
             else:
                 source_name = getattr(args, "source", None) or "web"
 
@@ -650,6 +710,10 @@ async def async_main(args: argparse.Namespace) -> int:
                 kwargs["page_id"] = args.page_id
             if getattr(args, "token", None):
                 kwargs["token"] = args.token
+            if getattr(args, "guild", None):
+                kwargs["guild"] = args.guild
+            if getattr(args, "guilds", None):
+                kwargs["guilds"] = args.guilds
             if getattr(args, "book_id", None):
                 kwargs["book_id"] = args.book_id
             if getattr(args, "updated_after", None):

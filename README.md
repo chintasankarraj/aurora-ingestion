@@ -53,6 +53,7 @@ aurora-ingestion/
 ├── sources/
 │   ├── __init__.py       # Sources package export
 │   ├── base.py           # BaseSource abstract interface, SourceRegistry, async_retry
+│   ├── discord_source.py # Discord message and thread connector
 │   ├── email_source.py   # Email thread connector (Gmail, Outlook)
 │   ├── github_source.py  # GitHub issues and gists connector
 │   ├── instapaper_source.py # Instapaper bookmark and highlight connector
@@ -71,6 +72,7 @@ aurora-ingestion/
 │   ├── test_cli.py         # CLI argument parser tests
 │   ├── test_config.py      # Vault path & folder configuration tests
 │   ├── test_converter.py   # Sanitization, frontmatter, and writer tests
+│   ├── test_discord_source.py # Discord connector tests
 │   ├── test_email_source.py# Email connector tests
 │   ├── test_github_source.py # GitHub connector tests
 │   ├── test_instapaper_source.py # Instapaper connector tests
@@ -843,6 +845,78 @@ The Slack connector connects to the official Slack Web API using Bearer token au
 
 ---
 
+## Discord Ingestion Connector (`DiscordSource`)
+
+The Discord connector connects to the official Discord REST API v10 using official Bot token authentication (`DISCORD_BOT_TOKEN` or `--token`). It discovers configured guild channels, fetches channel message histories, traverses threaded replies, normalizes Discord Markdown, mentions, and HTML entities, and compiles each message or thread into an Obsidian-compatible Markdown note under `Ingested/Social/`.
+
+### Key Features & Design:
+- **Official Bot Authentication**: Uses standard Discord Bot authorization (`Authorization: Bot <token>`). User tokens and self-bot accounts are strictly prohibited and rejected per Discord Developer Policy.
+- **Vault Topology & File Routing**:
+  - Target vault folder: `${AURORA_VAULT_PATH}/Ingested/Social/<YYYY-MM-DD>_discord_<sanitized-title>.md`.
+  - Tags: `[ingested, discord, social]`.
+- **Channel Discovery & Filtering**:
+  - Ingests text, forum, and announcement channels (types 0: `GUILD_TEXT`, 5: `GUILD_ANNOUNCEMENT`, 15: `GUILD_FORUM`, 16: `GUILD_MEDIA`).
+  - Voice channels (type 2: `GUILD_VOICE`, 13: `GUILD_STAGE_VOICE`) and category headers (type 4) are strictly excluded.
+  - Accepts channel Snowflake IDs or channel names (with or without `#`) when paired with a configured guild.
+- **Privileged Intents & Content Safeguards**:
+  - Requires the **MESSAGE CONTENT INTENT** enabled in the Discord Developer Portal under Bot settings.
+  - If message content is unavailable because the bot lacks this intent, the connector returns a clear, actionable error explaining the exact Developer Portal configuration required, preventing silent ingestion of blank notes.
+- **Thread Reply Traversal**:
+  - Thread starter messages and active threads are fetched via `GET /channels/{thread_id}/messages`.
+  - Replies are ordered chronologically and appended to the root message note under `## Thread`, preventing redundant separate notes for thread replies.
+- **Discord Markdown & Mention Normalization**:
+  - Mentions: `<@123>` and `<@!123>` resolve to `@username`, `<#456>` resolves to `#channel-name`, `<@&789>` resolves to `@role`.
+  - Custom emojis: `<:blob:123>` and `<a:party:456>` normalize cleanly to `:blob:` and `:party:`.
+  - URL safety: HTTP and HTTPS URLs are rendered as clickable Markdown links; unsafe schemes (`javascript:`, `data:`, `file:`, `ftp:`) are rendered as plain/code text.
+  - Clean Markdown: Strips raw HTML tags and `<script>`/`<style>` blocks using `markdownify`, preserving mathematical comparisons (`<`, `>`), code fences, and inline code.
+- **Stable Identity & Deduplication**:
+  - Stable identifier: `discord:message:<channel_id>:<message_id>`.
+  - In-place update lifecycle: Edited messages or new thread replies update the existing note in-place.
+- **Rate Limit Resilience & Bounded Backoff**:
+  - Automatically handles HTTP 429 rate limit responses with bounded authoritative backoff.
+  - Respects authoritative `retry_after` from JSON bodies and `Retry-After` headers.
+  - Configurable `max_retries` (default: 3) and dependency-injected sleep handler for deterministic testing.
+  - Inspects `X-RateLimit-Scope` (`global`, `user`, `shared`) to preserve upstream API limits without busy-waiting.
+
+### Bot Setup & Permissions:
+1. Create a Discord Application at the [Discord Developer Portal](https://discord.com/developers/applications).
+2. Under the **Bot** tab:
+   - Create a Bot and copy the Bot Token.
+   - Under **Privileged Gateway Intents**, enable **MESSAGE CONTENT INTENT** (available directly via toggle for bots below 10,000 guild-installed users).
+3. Under **OAuth2 > URL Generator**:
+   - Scopes: `bot`.
+   - Bot Permissions: `View Channels`, `Read Message History`.
+   - Use the generated invite URL to add the bot to your Discord server.
+
+### Configuration & CLI Usage:
+```bash
+# Set bot token in environment:
+export DISCORD_BOT_TOKEN="your_discord_bot_token"
+
+# Ingest channel by name with guild ID:
+python main.py ingest-discord --guild 123456789012345678 --channel general
+
+# Ingest multiple channels by ID:
+python main.py ingest-discord --channels "234567890123456789,345678901234567890"
+
+# Ingest with message limit and thread reply limit:
+python main.py ingest-discord --channel 234567890123456789 --limit 50 --max-replies 25
+
+# Ingest without fetching thread replies:
+python main.py ingest-discord --channel 234567890123456789 --no-threads
+
+# Generic CLI syntax:
+python main.py ingest --source discord --guild 123456789012345678 --channel general
+```
+
+### Limitations & Platform Restrictions:
+- **Privileged Intent Requirement**: Message content cannot be read by bots lacking the privileged Message Content Intent. Aurora enforces this requirement and displays clear setup guidance if content is missing. Under current Discord developer policy, bots in fewer than 10,000 guilds (or below 10,000 installed users) can enable the Message Content Intent directly via the toggle in the Developer Portal without verification. For bots installed in 10,000 or more guilds, Discord requires formal App Verification and privileged intent approval via App Review.
+- **Attachments**: Binary media files are not downloaded in v1; filenames, sizes, MIME types, and secure links are preserved in note metadata.
+- **Direct Messages & Private Channels**: User DMs and group DMs are out of scope. The bot can only ingest channels in guilds where it has been granted access.
+- **No Scraping**: In strict compliance with Discord Developer Policy, Aurora accesses Discord data exclusively via official Bot REST endpoints. Self-bots, user token automation, and credential scraping are not supported.
+
+---
+
 ## Running Tests
 
 Run the complete test suite with `pytest`:
@@ -851,7 +925,7 @@ Run the complete test suite with `pytest`:
 pytest -v
 ```
 
-All 455 unit and integration tests verify:
+All 536 unit and integration tests verify:
 - Vault path expansion and validation
 - Sanitization and 80-character title truncation
 - Frontmatter generation with `ingested` tag enforcement
@@ -1070,6 +1144,26 @@ All 455 unit and integration tests verify:
 - Slack rate limit defense (HTTP 429 and `ratelimited` error handling with `Retry-After` reset duration)
 - Slack fault isolation across channels, individual messages, and thread reply retrieval
 - Slack CLI commands (`ingest-slack` with `--channel`, `--channels`, `--token`, `--limit`, `--max-messages`, `--max-replies`, `--no-threads`, and generic `ingest --source slack`)
+- Discord connector registration (`discord`) and CLI source listing
+- Discord Bot token authentication (`DISCORD_BOT_TOKEN`, `--token`) and header construction (`Bot <token>`)
+- Discord secret and token scrubbing (tokens redacted from errors, logs, frontmatter, and markdown)
+- Discord channel discovery across configured guilds (`/guilds/{id}/channels`) and direct channel resolution
+- Discord text channel filtering and voice/stage channel exclusion (types 2 and 13)
+- Discord message history ingestion (`/channels/{id}/messages`) with `before` cursor pagination and limit enforcement
+- Discord Message Content Intent verification and clear setup guidance preventing blank notes
+- Discord thread reply retrieval (`/channels/{thread_id}/messages`) and chronological ordering
+- Discord thread single-document Markdown rendering with parent and reply hierarchy
+- Discord author resolution (`global_name` -> `username` -> `user_id` -> `[user unavailable]`)
+- Discord markup normalization (`<@...>`, `<#...>`, `<@&...>`, custom emojis `<:name:id>`)
+- Discord URL safety validation (HTTP/HTTPS linkified, unsafe schemes rendered as plain/code text)
+- Discord pure Markdown normalization via `markdownify` stripping raw HTML and `<script>`/`<style>` elements
+- Discord comparisons (`<`, `>`) and code block preservation
+- Discord notes saved directly to `Ingested/Social/` with YAML frontmatter and attribution blockquotes
+- Discord stable immutable source IDs (`discord:message:<channel_id>:<message_id>`) and in-place update lifecycle
+- Discord error mapping (401, 403 `50001` missing access, `50013` missing permissions, 404 `10003` channel, `10004` guild, 5xx server errors, timeout)
+- Discord rate limit defense (HTTP 429 with `Retry-After`, `retry_after` JSON, and `X-RateLimit-Scope` global/route/shared)
+- Discord fault isolation across channels, individual messages, and thread reply retrieval
+- Discord CLI commands (`ingest-discord` with `--guild`, `--guilds`, `--channel`, `--channels`, `--token`, `--limit`, `--max-messages`, `--max-replies`, `--no-threads`, and generic `ingest --source discord`)
 
 ---
 
@@ -1204,10 +1298,28 @@ All 455 unit and integration tests verify:
   - [x] Rate limit handling (HTTP 429 / `ratelimited` with `Retry-After` header extraction)
   - [x] Fault isolation across channels, individual messages, and thread replies
   - [x] CLI `ingest-slack` with `--channel`, `--channels`, `--token`, `--limit`, `--max-messages`, `--max-replies`, `--no-threads`, and generic `ingest --source slack`
-- [x] 100% test pass rate across all 455 tests.
+- [x] **Discord Source Connector** (`sources/discord_source.py`):
+  - [x] Official Discord REST API v10 integration with Bot token authentication (`DISCORD_BOT_TOKEN`, `--token`)
+  - [x] Guild channel discovery (`/guilds/{id}/channels`) and direct channel resolution
+  - [x] Voice channel exclusion (types 2 and 13) and category channel filtering
+  - [x] Message history fetching (`/channels/{id}/messages`) with `before` backwards pagination
+  - [x] Message Content Intent verification preventing silent ingestion of blank notes
+  - [x] Thread reply retrieval (`/channels/{thread_id}/messages`) with chronological sorting
+  - [x] Single-document Markdown rendering with root message and reply hierarchy
+  - [x] Author resolution (`global_name` -> `username` -> `user_id` -> `[user unavailable]`)
+  - [x] Markup normalization for `<@...>`, `<#...>`, `<@&...>`, and custom emojis
+  - [x] Safe URL validation (HTTP/HTTPS linkified, unsafe schemes rendered as plain/code text)
+  - [x] Pure Markdown normalization via `markdownify` stripping raw HTML and `<script>`/`<style>`
+  - [x] Comparisons (`<`, `>`) and code block preservation
+  - [x] Notes saved directly to `Ingested/Social/` with YAML frontmatter and attribution blockquotes
+  - [x] Stable identity (`discord:message:<channel_id>:<message_id>`) & in-place update lifecycle
+  - [x] Rate limit handling (HTTP 429 with `Retry-After` header, JSON `retry_after`, and `X-RateLimit-Scope`)
+  - [x] Fault isolation across channels, individual messages, and thread replies
+  - [x] CLI `ingest-discord` with `--guild`, `--guilds`, `--channel`, `--channels`, `--token`, `--limit`, `--max-messages`, `--max-replies`, `--no-threads`, and generic `ingest --source discord`
+- [x] 100% test pass rate across all 536 tests.
 
 ### Next Connectors to Implement:
-1. **Tier 3 Connectors**: Twitter/X, Discord, Telegram, Audio Whisper transcription, OCR screenshots.
+1. **Tier 3 Connectors**: Twitter/X, Telegram, Audio Whisper transcription, OCR screenshots.
 
 
 

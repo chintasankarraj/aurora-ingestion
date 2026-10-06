@@ -1,6 +1,7 @@
 """Sources package for Aurora Ingestion Pipeline."""
 
 from sources.base import BaseSource, SourceRegistry, async_retry
+from sources.discord_source import DiscordSource
 from sources.email_source import EmailSource
 from sources.github_source import GitHubSource
 from sources.instapaper_source import InstapaperSource
@@ -30,5 +31,6 @@ __all__ = [
     "GitHubSource",
     "RedditSource",
     "SlackSource",
+    "DiscordSource",
 ]
 
