@@ -13,6 +13,7 @@ from sources.reddit_source import RedditSource
 from sources.rss_source import RSSSource
 from sources.slack_source import SlackSource
 from sources.telegram_source import TelegramSource
+from sources.voice_source import VoiceSource
 from sources.web_source import WebSource
 from sources.youtube_source import YouTubeSource
 
@@ -34,5 +35,6 @@ __all__ = [
     "SlackSource",
     "DiscordSource",
     "TelegramSource",
+    "VoiceSource",
 ]
 

@@ -64,6 +64,8 @@ aurora-ingestion/
 │   ├── reddit_source.py  # Reddit saved posts and comments connector
 │   ├── rss_source.py     # RSS/Atom syndication connector
 │   ├── slack_source.py   # Slack conversation and thread connector
+│   ├── telegram_source.py# Telegram bot and chat message connector
+│   ├── voice_source.py   # Voice / Audio local Whisper transcription connector
 │   ├── web_source.py     # Web article connector
 │   └── youtube_source.py # YouTube video connector
 ├── tests/
@@ -84,7 +86,9 @@ aurora-ingestion/
 │   ├── test_reddit_source.py   # Reddit connector tests
 │   ├── test_rss_source.py  # RSS connector tests
 │   ├── test_slack_source.py# Slack connector tests
+│   ├── test_telegram_source.py# Telegram connector tests
 │   ├── test_tracker.py     # SQLite tracker lifecycle and deduplication tests
+│   ├── test_voice_source.py# Voice connector tests
 │   ├── test_web_source.py  # Web connector tests
 │   └── test_youtube_source.py # YouTube connector tests
 ├── requirements.txt      # Project dependencies
@@ -992,6 +996,76 @@ python main.py ingest --source telegram --chat -1001234567890
 
 ---
 
+## Voice / Audio Ingestion Connector (`VoiceSource`)
+
+The Voice connector enables local-first speech-to-text transcription of voice memos, meetings, lectures, and audio recordings using local Whisper-compatible models (`faster-whisper`). It requires **zero paid external transcription APIs**, operates completely offline without API keys, and formats transcriptions into clean Obsidian-compatible Markdown notes under `Ingested/Voice/`.
+
+### Key Capabilities:
+- **Local-First & Offline**: Uses `faster-whisper` (CTranslate2 backend) running directly on your machine. No OpenAI, Google Cloud Speech, AWS Transcribe, or other paid APIs are required or used.
+- **Supported Audio Formats**: Supports `.wav`, `.mp3`, `.m4a`, `.flac`, `.ogg`, `.opus`, `.aac`, and `.webm`. PyAV (`av`) handles container demuxing and decoding across formats.
+- **Deterministic Content Hashing**: Computes streaming 64 KB chunked SHA-256 digests (`voice:sha256:<content_hash>`), ensuring identical audio recordings (even if renamed or moved) are deduplicated without loading entire audio files into memory.
+- **Model Flexibility**: Supports all Whisper model sizes (`tiny`, `base`, `small`, `medium`, `large-v3`, etc.) or custom local model directories. Defaults to `small` for a balanced accuracy-speed tradeoff.
+- **Execution Hardware (`--device auto|cuda|cpu`)**: Supports CPU execution (default) and GPU CUDA execution. `--device auto` probes CUDA availability via CTranslate2, selecting `cuda` if available and safely falling back to `cpu` otherwise. Explicit `--device cuda` validates CUDA presence and raises actionable errors if unavailable.
+- **Readable Timestamp Formatting**: Renders structured speaker/speech segments in human-readable time intervals (`[00:01:23 - 00:01:45]`), automatically scaling to seconds, minutes, and hours (`HH:MM:SS`).
+- **Voice Activity Detection (VAD)**: Optional Silero VAD filtering via `--vad` to suppress background noise, music, and non-speech silence.
+- **Preflight Duration Checking & Safety Guards**: Rejects files exceeding `--max-duration` (default: 7200s / 2 hours) **before** calling the Whisper transcriber whenever container duration metadata is exposed (via PyAV container probing), preventing wasted compute and memory allocation. If container duration metadata is absent, safely falls back to post-transcription duration validation. Maximum file size cap enforced at 2 GB (`MAX_FILE_SIZE_BYTES`).
+- **Fault-Isolated Directory Ingestion**: Ingests individual files (`--file`), multiple files (`--files`), or entire directories (`--directory`). Corrupt or unreadable files in directory mode are logged and skipped without aborting the batch.
+- **Note Formatting & Attribution**: Notes are stored in `${AURORA_VAULT_PATH}/Ingested/Voice/<date>_voice_<title>.md` with frontmatter tags `[ingested, voice, audio]` and a formatted blockquote displaying filename, language, duration, model, and date.
+- **Title Determination**: Prefers embedded audio metadata title tags (ID3/container tags) when available, falling back to the sanitized audio filename stem (strictly capped at 80 characters without forbidden characters).
+
+### Model Weights & Offline Usage:
+Faster-whisper and CTranslate2 do **not** bundle gigabytes of pre-trained neural network weights directly inside the Python package installation:
+- **Named Models (`--model tiny|base|small|medium|large-v3`)**:
+  When a named model string is specified, `faster-whisper` checks the local Hugging Face model cache (`~/.cache/huggingface/hub`). If the model weights have not been downloaded yet, `faster-whisper` will automatically download the required model weights on first use. Subsequent invocations will load the cached local weights without network traffic.
+- **Local Offline Model Directory (`--model <local-model-path>`)**:
+  To operate completely air-gapped without automatic downloads on first run, specify the path to a directory containing pre-downloaded CTranslate2 Whisper model files:
+  ```bash
+  python main.py ingest-voice --file meeting.mp3 --model /path/to/local/whisper-small-ct2
+  ```
+
+### Configuration & CLI Usage:
+
+The Voice connector can be executed via the dedicated `ingest-voice` subcommand or the generic `ingest --source voice` command:
+
+```bash
+# Ingest and transcribe a single audio recording:
+python main.py ingest-voice --file meeting.mp3
+
+# Transcribe with a specific model and language:
+python main.py ingest-voice --file lecture.m4a --model medium --language en
+
+# Enable Voice Activity Detection (VAD) filter:
+python main.py ingest-voice --file interview.wav --vad
+
+# Automatically select CUDA GPU if available, or fall back to CPU:
+python main.py ingest-voice --file audio.wav --device auto
+
+# Run on GPU with float16 precision:
+python main.py ingest-voice --file audio.flac --device cuda --compute-type float16
+
+# Ingest an entire directory of audio recordings (non-recursive):
+python main.py ingest-voice --directory ./recordings
+
+# Ingest multiple specific audio files:
+python main.py ingest-voice --files ./notes/memo1.mp3,./notes/memo2.m4a
+
+# Enforce a custom maximum duration (e.g. reject recordings > 30 minutes before transcribing):
+python main.py ingest-voice --file recording.wav --max-duration 1800
+
+# Use a pre-downloaded offline local model directory:
+python main.py ingest-voice --file meeting.mp3 --model /path/to/local/model-dir
+
+# Generic CLI syntax:
+python main.py ingest --source voice --file interview.mp3 --model small
+```
+
+### Model Selection & Hardware Recommendations:
+- **`tiny` / `base`**: Fastest execution, minimal RAM usage (< 1 GB), suitable for quick personal voice notes on lightweight CPU hardware.
+- **`small` (Default)**: Excellent English and multilingual accuracy, runs comfortably on CPU (~2 GB RAM), recommended default for desktop use.
+- **`medium` / `large-v3`**: Highest transcription accuracy for technical jargon, accents, or difficult audio; recommended with GPU acceleration (`--device cuda`) or modern multi-core CPUs.
+
+---
+
 ## Running Tests
 
 Run the complete test suite with `pytest`:
@@ -1000,7 +1074,7 @@ Run the complete test suite with `pytest`:
 pytest -v
 ```
 
-All 599 unit and integration tests verify:
+All 680 unit and integration tests verify:
 - Vault path expansion and validation
 - Sanitization and 80-character title truncation
 - Frontmatter generation with `ingested` tag enforcement
@@ -1257,6 +1331,27 @@ All 599 unit and integration tests verify:
 - Telegram rate limit defense (HTTP 429 flood wait with `parameters.retry_after` and `Retry-After` header backoff)
 - Telegram fault isolation across updates and individual message conversions
 - Telegram CLI commands (`ingest-telegram` with `--chat`, `--chats`, `--token`, `--limit`, `--max-messages`, `--max-retries`, `--offset`, and generic `ingest --source telegram`)
+- Voice / Audio connector registration (`voice`) and CLI source listing
+- Voice input validation (missing file, directory passed as file, unsupported formats, 0-byte files, file size limits, permissions)
+- Supported audio formats validation (.wav, .mp3, .m4a, .flac, .ogg, .opus, .aac, .webm)
+- Voice chunked streaming SHA-256 calculation stability and memory safety
+- Voice content-based deduplication (`voice:sha256:<content_hash>`) across file moves and renames
+- Voice timestamp and duration formatting (`format_timestamp`, `format_voice_duration`, seconds, minutes, hours)
+- Voice transcript formatting with human-readable timestamp intervals (`[HH:MM:SS - HH:MM:SS]`)
+- Voice empty audio and silence handling (`*No speech detected in audio file.*`)
+- Voice note title sanitization (stripping forbidden characters, whitespace collapsing, 80-char cap, embedded title tag preference)
+- Audio container metadata probing via PyAV (`av`) with graceful fallback
+- Speech-to-text transcription parsing with injected mock transcriber (dependency injection)
+- Language handling: automatic language detection vs. explicit language override
+- Safety threshold enforcement: maximum audio duration limit (`--max-duration`)
+- Model execution and hardware handling: CPU defaults, quantization, and CUDA validation error mapping
+- Transcription error mapping (out of memory, CUDA driver failure, decoder error, generic runtime errors)
+- Audio batch processing across single files, multiple files (`--files`), and directories (`--directory`)
+- Directory scanning non-recursively with per-file fault isolation (skipping corrupt files without aborting batch)
+- Voice notes saved directly to `Ingested/Voice/` with YAML frontmatter tags `[ingested, voice, audio]`
+- Attribution block rendering displaying source file, duration, language, model, and date
+- Special markdown characters in transcripts preserved safely without corrupting frontmatter
+- CLI subcommands (`ingest-voice` with `--file`, `--files`, `--directory`, `--model`, `--language`, `--device`, `--compute-type`, `--beam-size`, `--vad`, `--max-duration`, and generic `ingest --source voice`)
 
 ---
 
@@ -1425,10 +1520,27 @@ All 599 unit and integration tests verify:
   - [x] Rate limit handling (HTTP 429 flood wait with bounded backoff and retry)
   - [x] Fault isolation across updates and individual messages
   - [x] CLI `ingest-telegram` with `--chat`, `--chats`, `--token`, `--limit`, `--max-messages`, `--max-retries`, `--offset`, and generic `ingest --source telegram`
-- [x] 100% test pass rate across all 599 tests.
+- [x] **Voice / Audio Source Connector** (`sources/voice_source.py`):
+  - [x] Local-first Whisper transcription using `faster-whisper` (CTranslate2 backend) with zero paid API dependencies
+  - [x] Supported formats: `.wav`, `.mp3`, `.m4a`, `.flac`, `.ogg`, `.opus`, `.aac`, `.webm`
+  - [x] Streaming chunked 64 KB SHA-256 deduplication identity (`voice:sha256:<content_hash>`)
+  - [x] Model options: `tiny`, `base`, `small` (default), `medium`, `large-v3`, or local path
+  - [x] Quantization & compute types: `int8`, `float16`, `float32`, `default`
+  - [x] Device support: `cpu` default, `cuda` with availability validation
+  - [x] Formatted timestamp intervals: `[HH:MM:SS - HH:MM:SS]` scaling across seconds, minutes, and hours
+  - [x] Embedded title tag preference with fallback to sanitized filename stem (capped at 80 chars)
+  - [x] Silence detection fallback (`*No speech detected in audio file.*`)
+  - [x] Voice Activity Detection (VAD) filter option (`--vad`)
+  - [x] Safety guards: preflight `--max-duration` rejection before transcribing, post-transcription duration validation fallback, and 2 GB file size limits
+  - [x] Execution hardware: `--device auto` with dynamic CUDA detection and safe CPU fallback, validated `--device cuda`, and default `--device cpu`
+  - [x] Fault-isolated directory scanning (`--directory`) skipping bad files without aborting
+  - [x] Notes saved directly to `Ingested/Voice/` with frontmatter tags `[ingested, voice, audio]`
+  - [x] Attribution block displaying source file, duration, language, model, and date
+  - [x] CLI `ingest-voice` with `--file`, `--files`, `--directory`, `--model`, `--language`, `--device`, `--compute-type`, `--beam-size`, `--vad`, `--max-duration`, and generic `ingest --source voice`
+- [x] 100% test pass rate across all 680 tests.
 
 ### Next Connectors to Implement:
-1. **Tier 3 Connectors**: Twitter/X, Audio Whisper transcription, OCR screenshots.
+1. **Tier 3 Connectors**: Twitter/X, OCR screenshots.
 
 
 

@@ -332,6 +332,46 @@ def create_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not fetch threaded replies for Slack or Discord",
     )
+    ingest_parser.add_argument(
+        "--files",
+        help="Comma-separated list of file paths (e.g. for Voice)",
+    )
+    ingest_parser.add_argument(
+        "--directory",
+        help="Path to directory containing files to ingest (e.g. for Voice)",
+    )
+    ingest_parser.add_argument(
+        "--model",
+        help="Whisper model name/size or local model path (e.g. for Voice)",
+    )
+    ingest_parser.add_argument(
+        "--language",
+        help="Language code (e.g. for Voice transcription)",
+    )
+    ingest_parser.add_argument(
+        "--device",
+        choices=["cpu", "cuda", "auto"],
+        help="Computation device (e.g. cpu, cuda for Voice transcription)",
+    )
+    ingest_parser.add_argument(
+        "--compute-type",
+        help="Computation quantization type (e.g. int8, float16, default for Voice)",
+    )
+    ingest_parser.add_argument(
+        "--beam-size",
+        type=int,
+        help="Beam size for transcription (e.g. for Voice)",
+    )
+    ingest_parser.add_argument(
+        "--vad",
+        action="store_true",
+        help="Enable Voice Activity Detection filter for Voice transcription",
+    )
+    ingest_parser.add_argument(
+        "--max-duration",
+        type=float,
+        help="Maximum allowed audio duration in seconds for Voice transcription",
+    )
 
     # Command: ingest-web
     ingest_web_parser = subparsers.add_parser("ingest-web", help="Shortcut to ingest a webpage by URL")
@@ -655,6 +695,56 @@ def create_parser() -> argparse.ArgumentParser:
         help="Identifier of first update to retrieve",
     )
 
+    # Command: ingest-voice
+    ingest_voice_parser = subparsers.add_parser(
+        "ingest-voice",
+        help="Ingest and transcribe local voice / audio recordings using local Whisper model",
+    )
+    ingest_voice_parser.add_argument(
+        "--file", "-f",
+        help="Path to an individual audio file to transcribe",
+    )
+    ingest_voice_parser.add_argument(
+        "--files",
+        help="Comma-separated list of audio file paths",
+    )
+    ingest_voice_parser.add_argument(
+        "--directory", "-d",
+        help="Path to directory containing audio files to transcribe",
+    )
+    ingest_voice_parser.add_argument(
+        "--model", "-m",
+        help="Whisper model name/size (e.g. tiny, base, small, medium, large-v3) or local model directory",
+    )
+    ingest_voice_parser.add_argument(
+        "--language", "-l",
+        help="Target language code (e.g. en, fr, de, es). Defaults to auto-detection.",
+    )
+    ingest_voice_parser.add_argument(
+        "--device",
+        choices=["cpu", "cuda", "auto"],
+        help="Computation device for transcription (default: cpu)",
+    )
+    ingest_voice_parser.add_argument(
+        "--compute-type",
+        help="Computation quantization type (e.g. int8, float16, float32, default)",
+    )
+    ingest_voice_parser.add_argument(
+        "--beam-size",
+        type=int,
+        help="Beam search size for transcription (default: 5)",
+    )
+    ingest_voice_parser.add_argument(
+        "--vad",
+        action="store_true",
+        help="Enable Voice Activity Detection (VAD) filter to suppress non-speech silence",
+    )
+    ingest_voice_parser.add_argument(
+        "--max-duration",
+        type=float,
+        help="Maximum allowed audio duration in seconds (longer files will be rejected)",
+    )
+
     # Command: status
     status_parser = subparsers.add_parser("status", help="Show deduplication tracker status")
     status_parser.add_argument(
@@ -719,7 +809,23 @@ async def async_main(args: argparse.Namespace) -> int:
                 print(f"  ... and {len(records) - 20} more records.")
             return 0
 
-        elif args.command in {"ingest", "ingest-web", "ingest-youtube", "ingest-email", "ingest-rss", "ingest-notion", "ingest-google-keep", "ingest-readwise", "ingest-instapaper", "ingest-github", "ingest-reddit", "ingest-slack"}:
+        elif args.command in {
+            "ingest",
+            "ingest-web",
+            "ingest-youtube",
+            "ingest-email",
+            "ingest-rss",
+            "ingest-notion",
+            "ingest-google-keep",
+            "ingest-readwise",
+            "ingest-instapaper",
+            "ingest-github",
+            "ingest-reddit",
+            "ingest-slack",
+            "ingest-discord",
+            "ingest-telegram",
+            "ingest-voice",
+        }:
             config.validate()
             pipeline = IngestionPipeline(config=config, tracker=tracker)
             if args.command == "ingest-email":
@@ -748,6 +854,8 @@ async def async_main(args: argparse.Namespace) -> int:
                 source_name = "discord"
             elif args.command == "ingest-telegram":
                 source_name = "telegram"
+            elif args.command == "ingest-voice":
+                source_name = "voice"
             else:
                 source_name = getattr(args, "source", None) or "web"
 
@@ -827,6 +935,24 @@ async def async_main(args: argparse.Namespace) -> int:
                 kwargs["offset"] = args.offset
             if getattr(args, "max_retries", None) is not None:
                 kwargs["max_retries"] = args.max_retries
+            if getattr(args, "files", None):
+                kwargs["files"] = args.files
+            if getattr(args, "directory", None):
+                kwargs["directory"] = args.directory
+            if getattr(args, "model", None):
+                kwargs["model"] = args.model
+            if getattr(args, "language", None):
+                kwargs["language"] = args.language
+            if getattr(args, "device", None):
+                kwargs["device"] = args.device
+            if getattr(args, "compute_type", None):
+                kwargs["compute_type"] = args.compute_type
+            if getattr(args, "beam_size", None) is not None:
+                kwargs["beam_size"] = args.beam_size
+            if getattr(args, "vad", False):
+                kwargs["vad"] = True
+            if getattr(args, "max_duration", None) is not None:
+                kwargs["max_duration"] = args.max_duration
 
             try:
                 stats = await pipeline.run_source(source_name, **kwargs)

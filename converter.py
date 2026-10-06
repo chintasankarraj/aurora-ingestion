@@ -386,6 +386,32 @@ def build_attribution_block(note: MarkdownNote) -> str:
             meta_parts.append(f"**Reply to**: #{reply_to_id}")
         if meta_parts:
             lines.append(f"> {' · '.join(meta_parts)}")
+    elif note.source == "voice":
+        source_file = note.extra_metadata.get("source_file") or note.source_url or "audio file"
+        file_disp = Path(source_file).name if ("/" in str(source_file) or "\\" in str(source_file)) else str(source_file)
+        lines.append(f"> **Source**: Local audio — {file_disp}")
+        meta_parts = []
+        lang = note.language or note.extra_metadata.get("language")
+        if lang:
+            meta_parts.append(f"**Language**: {lang}")
+        dur = note.extra_metadata.get("duration_seconds")
+        if dur is not None:
+            try:
+                tot = max(0.0, float(dur))
+                h = int(tot // 3600)
+                m = int((tot % 3600) // 60)
+                s = int(tot % 60)
+                meta_parts.append(f"**Duration**: {h:02d}:{m:02d}:{s:02d}")
+            except Exception:
+                meta_parts.append(f"**Duration**: {dur}s")
+        model = note.extra_metadata.get("model")
+        if model:
+            meta_parts.append(f"**Model**: {model}")
+        date_str = extract_date_prefix(note.date)
+        if date_str:
+            meta_parts.append(f"**Date**: {date_str}")
+        if meta_parts:
+            lines.append(f"> {' · '.join(meta_parts)}")
     else:
         # Generic attribution block
         meta_parts = [f"**Source**: {source_ref}"]
