@@ -917,6 +917,81 @@ python main.py ingest --source discord --guild 123456789012345678 --channel gene
 
 ---
 
+## Telegram Ingestion Connector (`TelegramSource`)
+
+The Telegram connector connects to the official Telegram Bot API (`https://api.telegram.org/bot<TOKEN>/`) using official Bot token authentication (`TELEGRAM_BOT_TOKEN` or `--token`). It retrieves messages, edited messages, channel posts, and captions from explicitly configured Telegram chats, channels, or groups, formats structured entities, normalizes HTML, preserves safe media metadata, and compiles each message into an Obsidian-compatible Markdown note under `Ingested/Social/`.
+
+### Key Features & Design:
+- **Official Bot API Integration**: Communicates exclusively via standard Telegram Bot API endpoint URL routing (`https://api.telegram.org/bot<TOKEN>/<method>`). Tokens are strictly protected and never logged. Personal user accounts, session hijacking, or MTProto scraping are not used.
+- **Vault Topology & File Routing**:
+  - Target vault folder: `${AURORA_VAULT_PATH}/Ingested/Social/<YYYY-MM-DD>_telegram_<sanitized-title>.md`.
+  - Tags: `[ingested, telegram, social]`.
+- **Supported Message Retrieval (`getUpdates`) & Safe Offset Acknowledgement**:
+  - Ingestion operates over messages queued via Telegram's official `getUpdates` endpoint.
+  - **Queue & Confirmation Semantics**: Telegram's Bot API treats `getUpdates` as a temporary update queue. An update is confirmed on Telegram's servers only when a subsequent `getUpdates` call is made with an `offset` greater than that update's ID.
+  - **Strict Consumed Boundary**: Aurora tracks `last_consumed_update_id` and advances `offset = last_consumed_update_id + 1` only for updates Aurora has intentionally processed (converted to `SourceItem`, deduplicated, or deliberately ignored due to unconfigured chat filtering or unsupported update type).
+  - **Safe `--limit` Handling**: Aurora requests only as many updates as needed (`min(100, remaining_needed)`) and never advances the offset past unconsumed updates. If a batch contains more updates than the configured limit, the unconsumed remainder is preserved in memory and remains unacknowledged on Telegram's server, ensuring subsequent runs receive all pending messages without data loss.
+  - **Configured Chat Filtering**: Updates from chats not configured in `--chat` / `TELEGRAM_CHAT_ID` are deterministically skipped and acknowledged so they do not block queue progression, while ensuring updates from configured chats are never skipped due to earlier limit boundaries.
+  - **Platform Retention Limitation**: Telegram retains incoming updates only for a limited period (typically up to 24 hours), and does not provide an arbitrary historical backfill endpoint (`getChatHistory`). Aurora ingests queued updates and does not claim arbitrary historical backfill.
+- **Chat Discovery & Flexible Identification**:
+  - Requires explicit chat configuration (`--chat`, `--chats`, `TELEGRAM_CHAT_ID`, `TELEGRAM_CHAT_IDS`).
+  - Supports negative IDs (supergroups and channels, e.g. `-1001234567890`, `-123456789`), positive IDs (private chats), public usernames (e.g. `@my_channel` or `my_channel`), and exact chat titles.
+- **Webhook Conflict Guard**:
+  - If a webhook is active on the bot, Telegram rejects polling with HTTP 409 Conflict. Aurora detects this and raises an actionable error explaining that the external webhook must be deleted if polling is desired, without silently or unexpectedly mutating external bot webhooks.
+- **UTF-16 Entity Normalization**:
+  - Accurately converts Telegram UTF-16 code unit offsets and lengths to Python character indices to prevent emoji/surrogate pair drift.
+  - Formats: `bold`, `italic`, `underline`, `strikethrough`, `code`, `pre` (fenced blocks with language tags), `text_link`, `url`, `spoiler`, and mentions.
+  - Cleans raw HTML using `markdownify` while preserving mathematical comparisons (`a < b`, `x > y`) and code fences.
+- **URL Safety Validation**:
+  - HTTP and HTTPS URLs are rendered as clickable Markdown links; unsafe schemes (`javascript:`, `data:`, `file:`, `ftp:`) are rendered as plain/code text.
+- **Replies & Forward Attribution**:
+  - Preserves reply hierarchy with formatted blockquotes (`## Replying to`) and frontmatter metadata (`reply_to_message_id`).
+  - Preserves forwarded channel and user attribution (`**Forwarded from**: ...`).
+- **Media Metadata & Caption Ingestion**:
+  - Media captions are formatted with full entity support identically to text messages.
+  - Safe metadata preserved for photos, documents, videos, audio, voice notes, animations, stickers, polls, locations, venues, and contacts.
+  - Binary media downloading is out of scope in v1; contact phone numbers and vcards are strictly excluded from output for privacy.
+- **Stable Identity & Deduplication**:
+  - Stable identifier: `telegram:message:<chat_id>:<message_id>`.
+  - In-place note updates on edited messages (`edited_message`, `edited_channel_post`).
+- **Rate Limit Resilience & Bounded Backoff**:
+  - Detects HTTP 429 Too Many Requests and Telegram flood wait errors, extracting authoritative delay from `parameters.retry_after` or `Retry-After` headers.
+  - Implements bounded retries with configurable `max_retries` (default: 3) and dependency-injected sleep handlers.
+
+### Bot Setup & Permissions:
+1. Open [@BotFather](https://t.me/BotFather) on Telegram and send `/newbot` to create your bot and obtain the Bot Token.
+2. Configure Bot Privacy for Groups:
+   - By default, Telegram enables **Group Privacy Mode**, meaning bots in groups only receive commands (`/...`), mentions, or replies.
+   - To ingest all messages in a group, send `/setprivacy` to @BotFather and set it to **Disable**, or promote the bot to **Administrator** in the group.
+3. Configure Channels:
+   - Add the bot to your channel as an **Administrator** with permission to read and post messages so it can receive `channel_post` updates.
+
+### Configuration & CLI Usage:
+```bash
+# Set bot token in environment:
+export TELEGRAM_BOT_TOKEN="123456789:ABCdefGHIjklMNOpqrsTUVwxyz123456789"
+
+# Ingest channel by username:
+python main.py ingest-telegram --chat @my_channel
+
+# Ingest multiple chats by ID (including negative supergroup IDs):
+python main.py ingest-telegram --chats "-1001234567890,-1009876543210"
+
+# Ingest with message limit and starting offset:
+python main.py ingest-telegram --chat -1001234567890 --limit 50 --offset 10050
+
+# Generic CLI syntax:
+python main.py ingest --source telegram --chat -1001234567890
+```
+
+### Limitations & Platform Restrictions:
+- **No Arbitrary History Traversal**: Telegram Bot API only delivers updates queued via `getUpdates` while the bot was a chat member. It cannot backfill years of historical chat history from before the bot was created.
+- **Webhook Mutual Exclusivity**: Polling via `getUpdates` cannot run concurrently with an active webhook. Aurora alerts the user on HTTP 409 without deleting external webhooks.
+- **Media Downloads**: Binary media files (images, audio, video) are not downloaded in v1; file IDs, MIME types, and dimensions are preserved in metadata.
+- **Direct User Messages**: Arbitrary private user DMs cannot be monitored; the bot only accesses chats where it is explicitly added.
+
+---
+
 ## Running Tests
 
 Run the complete test suite with `pytest`:
@@ -925,7 +1000,7 @@ Run the complete test suite with `pytest`:
 pytest -v
 ```
 
-All 536 unit and integration tests verify:
+All 599 unit and integration tests verify:
 - Vault path expansion and validation
 - Sanitization and 80-character title truncation
 - Frontmatter generation with `ingested` tag enforcement
@@ -1164,6 +1239,24 @@ All 536 unit and integration tests verify:
 - Discord rate limit defense (HTTP 429 with `Retry-After`, `retry_after` JSON, and `X-RateLimit-Scope` global/route/shared)
 - Discord fault isolation across channels, individual messages, and thread reply retrieval
 - Discord CLI commands (`ingest-discord` with `--guild`, `--guilds`, `--channel`, `--channels`, `--token`, `--limit`, `--max-messages`, `--max-replies`, `--no-threads`, and generic `ingest --source discord`)
+- Telegram connector registration (`telegram`) and CLI source listing
+- Telegram Bot token authentication (`TELEGRAM_BOT_TOKEN`, `--token`) and URL construction
+- Telegram secret and token scrubbing (tokens redacted from errors, logs, frontmatter, and markdown)
+- Telegram message updates retrieval (`getUpdates`) with offset advancement and limit enforcement
+- Telegram chat filtering by numeric ID, username (`@channel`), or chat title
+- Telegram webhook conflict detection (HTTP 409) with actionable configuration instructions
+- Telegram UTF-16 code unit offset alignment for entity extraction with emoji stability
+- Telegram entity formatting (bold, italic, code, pre with language tags, strikethrough, spoiler, links)
+- Telegram URL safety validation (HTTP/HTTPS linkified, unsafe schemes rendered as plain text)
+- Telegram pure Markdown normalization via `markdownify` stripping raw HTML and `<script>`/`<style>` elements
+- Telegram media metadata extraction (photos, documents, videos, audio, voice, stickers, polls, venues, locations)
+- Telegram contact privacy sanitization (phone numbers and vCards redacted)
+- Telegram reply preview blockquotes and forward attribution formatting
+- Telegram notes saved directly to `Ingested/Social/` with YAML frontmatter and attribution blockquotes
+- Telegram stable immutable source IDs (`telegram:message:<chat_id>:<message_id>`) and in-place update lifecycle
+- Telegram rate limit defense (HTTP 429 flood wait with `parameters.retry_after` and `Retry-After` header backoff)
+- Telegram fault isolation across updates and individual message conversions
+- Telegram CLI commands (`ingest-telegram` with `--chat`, `--chats`, `--token`, `--limit`, `--max-messages`, `--max-retries`, `--offset`, and generic `ingest --source telegram`)
 
 ---
 
@@ -1315,11 +1408,28 @@ All 536 unit and integration tests verify:
   - [x] Stable identity (`discord:message:<channel_id>:<message_id>`) & in-place update lifecycle
   - [x] Rate limit handling (HTTP 429 with `Retry-After` header, JSON `retry_after`, and `X-RateLimit-Scope`)
   - [x] Fault isolation across channels, individual messages, and thread replies
-  - [x] CLI `ingest-discord` with `--guild`, `--guilds`, `--channel`, `--channels`, `--token`, `--limit`, `--max-messages`, `--max-replies`, `--no-threads`, and generic `ingest --source discord`
-- [x] 100% test pass rate across all 536 tests.
+- [x] **Telegram Source Connector** (`sources/telegram_source.py`):
+  - [x] Official Telegram Bot API integration with Bot token authentication (`TELEGRAM_BOT_TOKEN`, `--token`)
+  - [x] Updates ingestion via `getUpdates` with offset advancement (`offset = update_id + 1`) and batch limit enforcement
+  - [x] Webhook conflict detection (HTTP 409) with actionable resolution guidance
+  - [x] Chat filtering across private chats, groups, supergroups, and channels (numeric ID, `@username`, title)
+  - [x] Group privacy mode guidance and channel administrator requirements
+  - [x] Accurate UTF-16 code unit entity parsing preventing emoji-induced formatting offsets
+  - [x] Entity rendering (bold, italic, code, pre with language tags, underline, strikethrough, spoiler, text_link, url)
+  - [x] URL safety validation (HTTP/HTTPS linkified, unsafe schemes rendered as plain text)
+  - [x] Pure Markdown normalization via `markdownify` stripping raw HTML and script/style tags
+  - [x] Reply previews (`## Replying to`) and forward attribution preservation
+  - [x] Media metadata extraction without binary downloads; contact phone number redaction
+  - [x] Notes saved directly to `Ingested/Social/` with YAML frontmatter and attribution blockquotes
+  - [x] Stable identity (`telegram:message:<chat_id>:<message_id>`) & in-place update lifecycle
+  - [x] Rate limit handling (HTTP 429 flood wait with bounded backoff and retry)
+  - [x] Fault isolation across updates and individual messages
+  - [x] CLI `ingest-telegram` with `--chat`, `--chats`, `--token`, `--limit`, `--max-messages`, `--max-retries`, `--offset`, and generic `ingest --source telegram`
+- [x] 100% test pass rate across all 599 tests.
 
 ### Next Connectors to Implement:
-1. **Tier 3 Connectors**: Twitter/X, Telegram, Audio Whisper transcription, OCR screenshots.
+1. **Tier 3 Connectors**: Twitter/X, Audio Whisper transcription, OCR screenshots.
+
 
 
 

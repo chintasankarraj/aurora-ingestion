@@ -304,6 +304,20 @@ def create_parser() -> argparse.ArgumentParser:
         help="Comma-separated list of guild IDs or names for Discord",
     )
     ingest_parser.add_argument(
+        "--chat",
+        action="append",
+        help="Chat ID, username, or title to ingest for Telegram (can be repeated)",
+    )
+    ingest_parser.add_argument(
+        "--chats",
+        help="Comma-separated list of chat IDs, usernames, or titles for Telegram",
+    )
+    ingest_parser.add_argument(
+        "--offset",
+        type=int,
+        help="Identifier of first update to retrieve for Telegram",
+    )
+    ingest_parser.add_argument(
         "--max-messages",
         type=int,
         help="Maximum messages to fetch per channel for Slack or Discord",
@@ -601,6 +615,46 @@ def create_parser() -> argparse.ArgumentParser:
         help="Do not fetch threaded replies",
     )
 
+    # Command: ingest-telegram
+    ingest_telegram_parser = subparsers.add_parser(
+        "ingest-telegram",
+        help="Ingest Telegram conversation messages and channel posts from configured chats",
+    )
+    ingest_telegram_parser.add_argument(
+        "--chat", "-c",
+        action="append",
+        help="Chat ID, username (e.g. @my_channel), or title to ingest (can be repeated)",
+    )
+    ingest_telegram_parser.add_argument(
+        "--chats",
+        help="Comma-separated list of chat IDs, usernames, or titles",
+    )
+    ingest_telegram_parser.add_argument(
+        "--token",
+        help="Telegram Bot token override (defaults to TELEGRAM_BOT_TOKEN)",
+    )
+    ingest_telegram_parser.add_argument(
+        "--limit",
+        type=int,
+        help="Maximum messages to fetch (default: 50)",
+    )
+    ingest_telegram_parser.add_argument(
+        "--max-messages",
+        type=int,
+        help="Maximum messages to fetch (alias for --limit)",
+    )
+    ingest_telegram_parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=3,
+        help="Maximum retries on rate limits (default: 3)",
+    )
+    ingest_telegram_parser.add_argument(
+        "--offset",
+        type=int,
+        help="Identifier of first update to retrieve",
+    )
+
     # Command: status
     status_parser = subparsers.add_parser("status", help="Show deduplication tracker status")
     status_parser.add_argument(
@@ -692,6 +746,8 @@ async def async_main(args: argparse.Namespace) -> int:
                 source_name = "slack"
             elif args.command == "ingest-discord":
                 source_name = "discord"
+            elif args.command == "ingest-telegram":
+                source_name = "telegram"
             else:
                 source_name = getattr(args, "source", None) or "web"
 
@@ -763,6 +819,14 @@ async def async_main(args: argparse.Namespace) -> int:
             if getattr(args, "no_threads", False):
                 kwargs["no_threads"] = True
                 kwargs["include_threads"] = False
+            if getattr(args, "chat", None):
+                kwargs["chat"] = args.chat
+            if getattr(args, "chats", None):
+                kwargs["chats"] = args.chats
+            if getattr(args, "offset", None) is not None:
+                kwargs["offset"] = args.offset
+            if getattr(args, "max_retries", None) is not None:
+                kwargs["max_retries"] = args.max_retries
 
             try:
                 stats = await pipeline.run_source(source_name, **kwargs)
