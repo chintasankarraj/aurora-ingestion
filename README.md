@@ -54,8 +54,11 @@ aurora-ingestion/
 │   ├── __init__.py       # Sources package export
 │   ├── base.py           # BaseSource abstract interface, SourceRegistry, async_retry
 │   ├── email_source.py   # Email thread connector (Gmail, Outlook)
+│   ├── instapaper_source.py # Instapaper bookmark and highlight connector
+│   ├── keep_source.py    # Google Keep Takeout JSON connector
 │   ├── notion_source.py  # Notion page connector
 │   ├── pdf_source.py     # PDF document connector
+│   ├── readwise_source.py# Readwise highlight and book connector
 │   ├── rss_source.py     # RSS/Atom syndication connector
 │   ├── web_source.py     # Web article connector
 │   └── youtube_source.py # YouTube video connector
@@ -66,9 +69,12 @@ aurora-ingestion/
 │   ├── test_config.py      # Vault path & folder configuration tests
 │   ├── test_converter.py   # Sanitization, frontmatter, and writer tests
 │   ├── test_email_source.py# Email connector tests
+│   ├── test_instapaper_source.py # Instapaper connector tests
+│   ├── test_keep_source.py # Google Keep connector tests
 │   ├── test_notion_source.py# Notion connector tests
 │   ├── test_pdf_source.py  # PDF connector tests
 │   ├── test_pipeline.py    # Pipeline orchestration and retry tests
+│   ├── test_readwise_source.py # Readwise connector tests
 │   ├── test_rss_source.py  # RSS connector tests
 │   ├── test_tracker.py     # SQLite tracker lifecycle and deduplication tests
 │   ├── test_web_source.py  # Web connector tests
@@ -252,6 +258,18 @@ python main.py ingest-readwise --updated-after "2026-01-01"
 # Or using generic CLI syntax:
 python main.py ingest --source readwise
 python main.py ingest --source readwise --book-id "123456"
+
+# Ingest bookmarks and highlights from Instapaper:
+python main.py ingest-instapaper
+# Ingest bookmarks from a specific folder (unread, archive, starred):
+python main.py ingest-instapaper --folder unread
+python main.py ingest-instapaper --folder archive
+python main.py ingest-instapaper --folder starred
+# Ingest with a limit:
+python main.py ingest-instapaper --limit 50
+# Or using generic CLI syntax:
+python main.py ingest --source instapaper
+python main.py ingest --source instapaper --folder archive --limit 25
 ```
 
 ---
@@ -530,6 +548,67 @@ The Readwise connector synchronizes saved books, articles, tweets, and podcasts 
 
 ---
 
+## Instapaper Source Connector (`sources/instapaper_source.py`)
+
+The Instapaper connector synchronizes saved bookmarks, articles, highlights, and user notes directly from Instapaper into Aurora's Obsidian vault.
+
+### Capabilities:
+- **Dual API Support**:
+  - Full compatibility with the modern Instapaper API v2 (`https://www.instapaper.com/api/2`) supporting Personal Access Tokens / Bearer tokens (`Authorization: Bearer <token>`).
+  - Backward compatibility with Instapaper API v1 (`https://www.instapaper.com/api/1/bookmarks/list`) with basic username & password authentication.
+- **Folder Filtering**:
+  - Filter bookmarks by folder: `unread` (default), `archive`, or `starred`.
+  - Configurable batch size / count limit via `--limit N`.
+- **Target Folder**:
+  - Writes notes directly to `${AURORA_VAULT_PATH}/Ingested/Web/<YYYY-MM-DD>_instapaper_<sanitized-title>.md`.
+- **Comprehensive Frontmatter**:
+  - `title`, `date`, `source: "instapaper"`, `tags: [ingested, instapaper, ...]`, `ingested_at`, `source_url`, `author`, `bookmark_id`, `folder`, `progress`, `starred`, and `num_highlights`.
+- **Highlights as Blockquotes & Personal Notes**:
+  - Highlights are cleanly rendered as standard Markdown `> blockquotes`.
+  - Multi-line highlights have each line prefixed with `>`.
+  - User notes and annotations attached to highlights are rendered inline below the quote as `**My note:** note_text`.
+  - When no highlights exist on a bookmark, the highlights section is omitted completely.
+- **Content & Excerpt Structure**:
+  - Full article content (`content`, `text`, or `html`) is normalized: HTML is safely detected and converted to clean Markdown via `markdownify` with `<script>` and `<style>` elements and contents stripped (no raw HTML emitted), while plain text and Markdown formatting are preserved without destruction.
+  - If full article text is absent, article descriptions or excerpts are rendered under `## Excerpt`.
+  - If neither is available, a clear placeholder (`*No excerpt or content provided by Instapaper.*`) is provided.
+- **Tag Normalization**:
+  - Extracts tags from bookmarks, strips leading `#` symbols, removes duplicates, and ensures mandatory `ingested` and `instapaper` tags.
+- **Deduplication & In-Place Updates**:
+  - `source_id`: `instapaper:<bookmark_id>` (stable immutable identifier; never derives identity from mutable titles or URLs).
+  - `content_hash`: SHA-256 digest of title, body/excerpt, highlights, and notes.
+  - **Unchanged**: Skips re-writing when content is identical.
+  - **Changed**: Overwrites the existing note at the exact same path in `${AURORA_VAULT_PATH}/Ingested/Web/` when new highlights or content changes occur, without creating duplicate files.
+- **Defensive Networking & Batch Fault Isolation**:
+  - Defends pagination against duplicate cursor loops and repeated batch fingerprints.
+  - Individual malformed API records or single-item conversion errors are safely logged and skipped, allowing all healthy bookmarks to continue ingestion.
+  - Secret scrubbing: Tokens, passwords, and authorization headers are never logged or exposed in exceptions or note frontmatter.
+
+### Setup & Authentication:
+1. Configure credentials using either method:
+   - **API Token (Recommended)**:
+     ```bash
+     export INSTAPAPER_TOKEN="your_instapaper_token_here"
+     # Or in .env:
+     # INSTAPAPER_TOKEN=your_instapaper_token_here
+     ```
+   - **Username & Password (v1 fallback)**:
+     ```bash
+     export INSTAPAPER_USERNAME="your_username_or_email"
+     export INSTAPAPER_PASSWORD="your_password"
+     # Or in .env:
+     # INSTAPAPER_USERNAME=your_username_or_email
+     # INSTAPAPER_PASSWORD=your_password
+     ```
+2. Run ingestion:
+   ```bash
+   python main.py ingest-instapaper
+   # Or with options:
+   python main.py ingest-instapaper --folder archive --limit 50
+   ```
+
+---
+
 ## Running Tests
 
 Run the complete test suite with `pytest`:
@@ -538,7 +617,7 @@ Run the complete test suite with `pytest`:
 pytest -v
 ```
 
-All 231 unit and integration tests verify:
+All 280 unit and integration tests verify:
 - Vault path expansion and validation
 - Sanitization and 80-character title truncation
 - Frontmatter generation with `ingested` tag enforcement
@@ -674,6 +753,28 @@ All 231 unit and integration tests verify:
 - Readwise stable immutable source ID (`user_book_id`, `id`, `book_id`, stable URL fallback, and rejection of records lacking ID or URL to prevent title drift)
 - Readwise edge case handling (missing title fallback, missing author/URL, Unicode emojis/symbols)
 - Readwise CLI commands (`ingest-readwise` with `--book-id` and `--updated-after`, and generic `ingest --source readwise`)
+- Instapaper connector registration (`instapaper`) and CLI source listing
+- Instapaper missing credentials error handling (`SourceError`)
+- Instapaper authentication via `INSTAPAPER_TOKEN` (Bearer token) and username/password fallback
+- Instapaper token and credential secrecy (tokens and passwords never logged or included in exceptions or frontmatter)
+- Instapaper API v2 (`bookmarks` dictionary) and API v1 (mixed bookmark and highlight list) response parsing
+- Instapaper pagination loop defense (cursor tracking, duplicate batch fingerprint detection, maximum page limits)
+- Instapaper empty response and empty bookmark list resilience
+- Instapaper API error handling (401 unauthorized, 403 forbidden, 404 not found, 429 rate limit, 500 server error, timeouts, connection errors)
+- Instapaper batch fault isolation (individual malformed records skipped without aborting healthy items)
+- Instapaper bookmark deduplication within ingestion runs
+- Instapaper YAML frontmatter generation (`title`, `date`, `source`, `tags`, `author`, `source_url`, `bookmark_id`, `folder`, `progress`, `starred`, `num_highlights`)
+- Instapaper highlight extraction and standard Markdown `> blockquotes` formatting with multi-line support
+- Instapaper personal notes attached to highlights formatted inline as `**My note:** note_text`
+- Instapaper omission of highlights section when no highlights exist
+- Instapaper article content vs. excerpt extraction (`## Content`, `## Excerpt`, and placeholder fallback)
+- Instapaper tag extraction and normalization (symbol `#` stripped, duplicate-free, mandatory `ingested` tag)
+- Instapaper note generation targeted directly under `Ingested/Web/`
+- Instapaper filename sanitization, 80-character title truncation, and collision handling (`_2.md`)
+- Instapaper deduplication lifecycle (NEW creates note, UNCHANGED skips, CHANGED overwrites in-place at same path)
+- Instapaper stable immutable source ID (`instapaper:<bookmark_id>`, rejecting items without bookmark ID to prevent title drift)
+- Instapaper edge case handling (missing title fallback, missing author/URL, Unicode emojis/symbols)
+- Instapaper CLI commands (`ingest-instapaper` with `--folder` and `--limit`, and generic `ingest --source instapaper`)
 
 ---
 
@@ -756,11 +857,21 @@ All 231 unit and integration tests verify:
   - [x] Notes saved directly to `Ingested/Web/` with YAML frontmatter and attribution blockquotes
   - [x] Stable identity (`readwise:<user_book_id>`) & in-place update lifecycle
   - [x] CLI `ingest-readwise` with `--book-id` and `--updated-after`, and generic `ingest --source readwise`
-- [x] 100% test pass rate across all 231 tests.
+- [x] **Instapaper Source Connector** (`sources/instapaper_source.py`):
+  - [x] Dual Instapaper API v2 (Bearer token / Personal Access Token) and v1 (username/password) support
+  - [x] Secure authentication via `INSTAPAPER_TOKEN` (zero token leaking in logs or exceptions)
+  - [x] Folder filtering (`unread`, `archive`, `starred`) and limit options
+  - [x] Individual item batch fault isolation and pagination loop defense
+  - [x] Article content conversion via `markdownify` and excerpt fallback
+  - [x] Highlights rendered as clean Markdown `> blockquotes` with personal notes (`**My note:** ...`)
+  - [x] Tag normalization and `#` symbol sanitization
+  - [x] Notes saved directly to `Ingested/Web/` with YAML frontmatter and attribution blockquotes
+  - [x] Stable identity (`instapaper:<bookmark_id>`) & in-place update lifecycle
+  - [x] CLI `ingest-instapaper` with `--folder` and `--limit`, and generic `ingest --source instapaper`
+- [x] 100% test pass rate across all 280 tests.
 
 ### Next Connectors to Implement:
-1. **Tier 2 Connectors**: Pocket, Instapaper.
-2. **Tier 3 Connectors**: Twitter/X, Reddit, Slack/Discord/Telegram, Audio Whisper transcription, OCR screenshots, GitHub.
+1. **Tier 3 Connectors**: Twitter/X, Reddit, Slack/Discord/Telegram, Audio Whisper transcription, OCR screenshots, GitHub.
 
 
 

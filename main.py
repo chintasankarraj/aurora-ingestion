@@ -212,6 +212,23 @@ def create_parser() -> argparse.ArgumentParser:
         "--updated-after",
         help="Fetch items updated after date (e.g. for Readwise)",
     )
+    ingest_parser.add_argument(
+        "--username",
+        help="Username (e.g. for Instapaper)",
+    )
+    ingest_parser.add_argument(
+        "--password",
+        help="Password (e.g. for Instapaper)",
+    )
+    ingest_parser.add_argument(
+        "--folder",
+        help="Folder name or ID (e.g. for Instapaper)",
+    )
+    ingest_parser.add_argument(
+        "--limit",
+        type=int,
+        help="Maximum items to fetch (e.g. for Instapaper)",
+    )
 
     # Command: ingest-web
     ingest_web_parser = subparsers.add_parser("ingest-web", help="Shortcut to ingest a webpage by URL")
@@ -279,6 +296,35 @@ def create_parser() -> argparse.ArgumentParser:
         help="Optional ISO 8601 date to ingest items updated after (e.g. 2026-01-01)",
     )
 
+    # Command: ingest-instapaper
+    ingest_ip_parser = subparsers.add_parser(
+        "ingest-instapaper",
+        help="Ingest saved bookmarks and highlights from Instapaper API",
+    )
+    ingest_ip_parser.add_argument(
+        "--token",
+        help="Instapaper API token / Personal token (defaults to INSTAPAPER_TOKEN)",
+    )
+    ingest_ip_parser.add_argument(
+        "--username",
+        help="Instapaper username (defaults to INSTAPAPER_USERNAME)",
+    )
+    ingest_ip_parser.add_argument(
+        "--password",
+        help="Instapaper password (defaults to INSTAPAPER_PASSWORD)",
+    )
+    ingest_ip_parser.add_argument(
+        "--folder",
+        default="unread",
+        help="Folder to fetch: unread, archive, starred, or folder ID (default: unread)",
+    )
+    ingest_ip_parser.add_argument(
+        "--limit",
+        type=int,
+        default=50,
+        help="Number of bookmarks to fetch per request (default: 50)",
+    )
+
     # Command: status
     status_parser = subparsers.add_parser("status", help="Show deduplication tracker status")
     status_parser.add_argument(
@@ -343,7 +389,7 @@ async def async_main(args: argparse.Namespace) -> int:
                 print(f"  ... and {len(records) - 20} more records.")
             return 0
 
-        elif args.command in {"ingest", "ingest-web", "ingest-youtube", "ingest-email", "ingest-rss", "ingest-notion", "ingest-google-keep", "ingest-readwise"}:
+        elif args.command in {"ingest", "ingest-web", "ingest-youtube", "ingest-email", "ingest-rss", "ingest-notion", "ingest-google-keep", "ingest-readwise", "ingest-instapaper"}:
             config.validate()
             pipeline = IngestionPipeline(config=config, tracker=tracker)
             if args.command == "ingest-email":
@@ -360,6 +406,8 @@ async def async_main(args: argparse.Namespace) -> int:
                 source_name = "google-keep"
             elif args.command == "ingest-readwise":
                 source_name = "readwise"
+            elif args.command == "ingest-instapaper":
+                source_name = "instapaper"
             else:
                 source_name = getattr(args, "source", None) or "web"
 
@@ -382,6 +430,14 @@ async def async_main(args: argparse.Namespace) -> int:
                 kwargs["book_id"] = args.book_id
             if getattr(args, "updated_after", None):
                 kwargs["updated_after"] = args.updated_after
+            if getattr(args, "username", None):
+                kwargs["username"] = args.username
+            if getattr(args, "password", None):
+                kwargs["password"] = args.password
+            if getattr(args, "folder", None):
+                kwargs["folder"] = args.folder
+            if getattr(args, "limit", None):
+                kwargs["limit"] = args.limit
 
             try:
                 stats = await pipeline.run_source(source_name, **kwargs)

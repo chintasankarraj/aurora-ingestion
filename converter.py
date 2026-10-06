@@ -250,6 +250,23 @@ def build_attribution_block(note: MarkdownNote) -> str:
             meta_parts.append(f"**Date**: {date_str}")
         if meta_parts:
             lines.append(f"> {' · '.join(meta_parts)}")
+    elif note.source == "instapaper":
+        source_url = note.source_url or ""
+        source_ref = f"[Instapaper]({source_url})" if source_url else "Instapaper"
+        lines.append(f"> **Source**: {source_ref}")
+        meta_parts = []
+        if note.author:
+            meta_parts.append(f"**Author**: {note.author}")
+        if source_url:
+            meta_parts.append(f"**URL**: [{source_url}]({source_url})")
+        folder = note.extra_metadata.get("folder")
+        if folder:
+            meta_parts.append(f"**Folder**: {folder.title()}")
+        date_str = extract_date_prefix(note.date)
+        if date_str:
+            meta_parts.append(f"**Date**: {date_str}")
+        if meta_parts:
+            lines.append(f"> {' · '.join(meta_parts)}")
     else:
         # Generic attribution block
         meta_parts = [f"**Source**: {source_ref}"]
