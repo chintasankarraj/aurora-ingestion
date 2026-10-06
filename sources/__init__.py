@@ -8,6 +8,7 @@ from sources.keep_source import KeepSource
 from sources.notion_source import NotionSource
 from sources.pdf_source import PDFSource
 from sources.readwise_source import ReadwiseSource
+from sources.reddit_source import RedditSource
 from sources.rss_source import RSSSource
 from sources.web_source import WebSource
 from sources.youtube_source import YouTubeSource
@@ -26,5 +27,6 @@ __all__ = [
     "ReadwiseSource",
     "InstapaperSource",
     "GitHubSource",
+    "RedditSource",
 ]
 

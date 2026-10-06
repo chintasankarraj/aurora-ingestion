@@ -309,6 +309,26 @@ def build_attribution_block(note: MarkdownNote) -> str:
                 meta_parts.append(f"**Date**: {date_str}")
             if meta_parts:
                 lines.append(f"> {' · '.join(meta_parts)}")
+    elif note.source == "reddit":
+        subreddit = note.extra_metadata.get("subreddit", "")
+        sub_str = f"r/{subreddit}" if subreddit else "Reddit"
+        source_ref = f"[Reddit — {sub_str}]({note.source_url})" if note.source_url else f"Reddit — {sub_str}"
+        lines.append(f"> **Source**: {source_ref}")
+        meta_parts = []
+        if note.author:
+            author_disp = f"u/{note.author}" if note.author != "[deleted]" else "[deleted]"
+            meta_parts.append(f"**Author**: {author_disp}")
+        score = note.extra_metadata.get("score")
+        if score is not None:
+            meta_parts.append(f"**Score**: {score}")
+        comment_count = note.extra_metadata.get("comment_count")
+        if comment_count is not None:
+            meta_parts.append(f"**Comments**: {comment_count}")
+        date_str = extract_date_prefix(note.date)
+        if date_str:
+            meta_parts.append(f"**Created**: {date_str}")
+        if meta_parts:
+            lines.append(f"> {' · '.join(meta_parts)}")
     else:
         # Generic attribution block
         meta_parts = [f"**Source**: {source_ref}"]

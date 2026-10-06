@@ -675,6 +675,75 @@ The GitHub connector synchronizes repository issues and user gists from the offi
 
 ---
 
+## Reddit Source Connector (`sources/reddit_source.py`)
+
+The Reddit connector synchronizes posts and their comment discussions from configured subreddits via the official Reddit REST API into Aurora's Obsidian vault.
+
+### Capabilities:
+- **Subreddit Posts**:
+  - Ingest posts across one or multiple subreddits (`programming`, `r/MachineLearning`, `LocalLLaMA`).
+  - Supports both self-posts (full Markdown text) and link posts (preserving Reddit permalink and external source URL).
+  - Automatically filters advertisements and promoted posts (`promoted: true`).
+  - Metadata section: Subreddit, Author, Score, Comment count, Creation timestamp, Flair, Edited status, and External URL rendered under `## Metadata`.
+  - Content normalization: converts HTML elements via `markdownify`, strips `<script>` and `<style>` blocks, unescapes Reddit HTML entities (`&gt;`, `&lt;`, `&amp;`), and strictly preserves ordinary Markdown, headings, lists, tables, comparisons (`<` and `>`), and code fences.
+- **Comments Traversal & Formatting**:
+  - Fetches comments in chronological order using Reddit's `sort=old` API parameter.
+  - Deterministically sorts comments locally by `created_utc` ascending and comment `id` ascending tie-breaker.
+  - Safely flattens nested comment trees into readable Obsidian blockquotes:
+    - Top-level comments formatted as `### @author — YYYY-MM-DD (Score: X)`.
+    - Nested replies rendered as blockquotes: `> **↳ @reply_user** — YYYY-MM-DD (Score: X) *(reply to @parent_author)*:`.
+  - Configurable comment cap via `--max-comments` (default: 50) and comment omission via `--no-comments`.
+  - Fault-tolerant comment parsing: malformed comment objects and deleted authors/bodies are handled without failing the post or thread.
+- **Target Folder**:
+  - Notes written directly to `${AURORA_VAULT_PATH}/Ingested/Social/<YYYY-MM-DD>_reddit_<sanitized-title>.md`.
+- **YAML Frontmatter**:
+  - `title`, `date`, `source: "reddit"`, `tags: [ingested, reddit, social]`, `ingested_at`, `source_url`, `author`, `subreddit`, `reddit_id`, `score`, `comment_count`, `flair`, `external_url`.
+- **Deduplication & In-Place Updates**:
+  - Immutable stable identifier: `reddit:post:<post_id>`.
+  - Identity is never derived from mutable post titles or URLs.
+  - Title changes overwrite the existing note in-place without creating duplicate notes.
+  - Content hash: SHA-256 digest of post body, metadata, and comments.
+- **Defensive Networking & Batch Fault Isolation**:
+  - Credentials and tokens are never logged or exposed in exceptions.
+  - Subreddit-level fault isolation: a 404 or missing subreddit does not abort remaining healthy subreddits.
+  - Post-level fault isolation: malformed posts or comment fetch errors do not abort the subreddit batch.
+  - Rate limit handling: parses `x-ratelimit-reset` on HTTP 429 and provides user-friendly reset duration messages.
+
+### Setup & Authentication:
+1. Create a script application at [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps) to obtain a Client ID and Client Secret.
+2. Configure credentials in your environment or `.env`:
+   ```bash
+   export REDDIT_CLIENT_ID="your_client_id"
+   export REDDIT_CLIENT_SECRET="your_client_secret"
+   export REDDIT_USER_AGENT="aurora-ingestion:v1.0.0 (by /u/your_reddit_username)"
+   # Optional direct token override:
+   # export REDDIT_ACCESS_TOKEN="your_bearer_token"
+   ```
+3. Run ingestion:
+   ```bash
+   # Ingest hot posts from a single subreddit:
+   python main.py ingest-reddit --subreddit programming
+
+   # Ingest posts across multiple subreddits:
+   python main.py ingest-reddit --subreddits "programming,MachineLearning,LocalLLaMA"
+
+   # Ingest top posts with custom limits:
+   python main.py ingest-reddit --subreddit artificial --listing top --limit 20 --max-comments 30
+
+   # Ingest without comments:
+   python main.py ingest-reddit --subreddit programming --no-comments
+
+   # Generic CLI syntax:
+   python main.py ingest --source reddit --subreddit programming
+   ```
+
+### Limitations:
+- **Application-Only Scope**: OAuth2 `client_credentials` grant accesses public subreddit data only. Private subreddits and user-specific actions (e.g. upvoting, saved posts, private messages) are not accessible.
+- **Comment Tree Placeholders**: Enormous threads containing deep `more` objects are flattened up to loaded comments within `--max-comments` to avoid unbounded network requests and memory usage.
+- **Rate Limits**: Subject to Reddit's standard OAuth rate limit (typically 60-100 requests per minute).
+
+---
+
 ## Running Tests
 
 Run the complete test suite with `pytest`:
@@ -683,7 +752,7 @@ Run the complete test suite with `pytest`:
 pytest -v
 ```
 
-All 341 unit and integration tests verify:
+All 397 unit and integration tests verify:
 - Vault path expansion and validation
 - Sanitization and 80-character title truncation
 - Frontmatter generation with `ingested` tag enforcement
@@ -861,6 +930,25 @@ All 341 unit and integration tests verify:
 - GitHub malformed comment resilience (safe author extraction for missing, None, non-dict, or login-less user objects without aborting the issue or valid comments)
 - GitHub truncated gist file recovery via `raw_url` (fetching complete code on HTTP 200, preserving language, falling back to partial content with truncation notice on failure, secret-safe logging)
 - GitHub gist body single `## Files` section header enforcement and duplicate prevention
+- Reddit connector registration (`reddit`) and CLI source listing
+- Reddit OAuth2 application-only authentication (`client_credentials`) and direct Bearer token support
+- Reddit credential and token secrecy (credentials scrubbed from logs, errors, and frontmatter)
+- Reddit subreddit name validation, `r/` prefix stripping, and comma-separated list parsing
+- Reddit posts retrieval across configured subreddits (`hot`, `new`, `top`, `rising`)
+- Reddit advertisement and sponsored post filtering (`promoted: true`)
+- Reddit self-posts full Markdown text extraction and link posts external URL attribution
+- Reddit comment tree recursive traversal with configurable cap (`--max-comments`) and omission (`--no-comments`)
+- Reddit comment chronological ordering (`sort=old` API request and local `(created_utc, id)` sorting)
+- Reddit nested replies formatted as readable blockquotes with reply attribution (`> **↳ @user** ... *(reply to @parent)*:`)
+- Reddit deleted author (`[deleted]`) and deleted/removed body handling
+- Reddit pure Markdown content normalization via `markdownify` stripping raw HTML and `<script>`/`<style>` blocks
+- Reddit HTML entities unescaping (`&gt;`, `&lt;`, `&amp;`) and comparisons (`<`, `>`) preservation
+- Reddit cursor-based pagination loop defense and repeated cursor cycle prevention
+- Reddit notes saved directly to `Ingested/Social/` with YAML frontmatter and attribution blockquotes
+- Reddit stable immutable source IDs (`reddit:post:<post_id>`) and in-place update lifecycle
+- Reddit error mapping (401 auth, 403 forbidden, 404 not found, 429 rate limit with reset time, 500 server error, timeouts, connection errors)
+- Reddit batch fault isolation across subreddits, individual posts, and comment threads
+- Reddit CLI commands (`ingest-reddit` with `--subreddit`, `--subreddits`, `--listing`, `--limit`, `--max-comments`, `--no-comments`, and generic `ingest --source reddit`)
 
 ---
 
@@ -970,10 +1058,21 @@ All 341 unit and integration tests verify:
   - [x] Non-fatal malformed comment and user data resilience (missing/None/non-dict/login-less user objects default safely to `unknown`)
   - [x] Truncated gist file recovery via `raw_url` with partial content fallback and truncation notices
   - [x] CLI `ingest-github` with `--repo`, `--repos`, `--state`, `--include-gists`, `--gists-only`, `--no-comments`, `--limit`, and generic `ingest --source github`
-- [x] 100% test pass rate across all 340 tests.
+- [x] **Reddit Source Connector** (`sources/reddit_source.py`):
+  - [x] Reddit REST API integration with OAuth2 Application-Only authentication
+  - [x] Subreddit post retrieval (`hot`, `new`, `top`, `rising`) with ad filtering (`promoted: true`)
+  - [x] Comment tree traversal with chronological ordering (`sort=old`) and local sorting (`(created_utc, id)` asc)
+  - [x] Nested comment flattening into readable blockquotes with reply attribution
+  - [x] Markdown content normalization via `markdownify` stripping raw HTML and unescaping entities
+  - [x] Secure authentication with credentials scrubbed from logs, errors, and frontmatter
+  - [x] Notes saved directly to `Ingested/Social/` with YAML frontmatter and attribution blockquotes
+  - [x] Stable identity (`reddit:post:<post_id>`) & in-place update lifecycle
+  - [x] Batch fault isolation across subreddits, individual posts, and comment threads
+  - [x] CLI `ingest-reddit` with `--subreddit`, `--subreddits`, `--listing`, `--limit`, `--max-comments`, `--no-comments`, and generic `ingest --source reddit`
+- [x] 100% test pass rate across all 397 tests.
 
 ### Next Connectors to Implement:
-1. **Tier 3 Connectors**: Twitter/X, Reddit, Slack/Discord/Telegram, Audio Whisper transcription, OCR screenshots.
+1. **Tier 3 Connectors**: Twitter/X, Slack/Discord/Telegram, Audio Whisper transcription, OCR screenshots.
 
 
 

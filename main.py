@@ -253,6 +253,38 @@ def create_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Ingest only user gists in GitHub ingestion",
     )
+    ingest_parser.add_argument(
+        "--subreddit", "-sub",
+        action="append",
+        help="Subreddit to ingest for Reddit (can be repeated, e.g. -sub programming)",
+    )
+    ingest_parser.add_argument(
+        "--subreddits",
+        help="Comma-separated list of subreddits for Reddit (e.g. programming,MachineLearning)",
+    )
+    ingest_parser.add_argument(
+        "--client-id",
+        help="Client ID (e.g. for Reddit)",
+    )
+    ingest_parser.add_argument(
+        "--client-secret",
+        help="Client secret (e.g. for Reddit)",
+    )
+    ingest_parser.add_argument(
+        "--user-agent",
+        help="Custom User-Agent (e.g. for Reddit)",
+    )
+    ingest_parser.add_argument(
+        "--listing",
+        choices=["hot", "new", "top", "rising"],
+        default="hot",
+        help="Listing type to fetch for Reddit: hot, new, top, rising (default: hot)",
+    )
+    ingest_parser.add_argument(
+        "--max-comments",
+        type=int,
+        help="Maximum comments to fetch per item (e.g. for Reddit)",
+    )
 
     # Command: ingest-web
     ingest_web_parser = subparsers.add_parser("ingest-web", help="Shortcut to ingest a webpage by URL")
@@ -394,6 +426,59 @@ def create_parser() -> argparse.ArgumentParser:
         help="Maximum issues/gists to fetch per repository/gists",
     )
 
+    # Command: ingest-reddit
+    ingest_reddit_parser = subparsers.add_parser(
+        "ingest-reddit",
+        help="Ingest Reddit posts and comments from configured subreddits",
+    )
+    ingest_reddit_parser.add_argument(
+        "--subreddit", "-sub",
+        action="append",
+        help="Subreddit to ingest (can be repeated, e.g. -sub programming)",
+    )
+    ingest_reddit_parser.add_argument(
+        "--subreddits",
+        help="Comma-separated list of subreddits (e.g. programming,MachineLearning)",
+    )
+    ingest_reddit_parser.add_argument(
+        "--client-id",
+        help="Reddit application client ID (defaults to REDDIT_CLIENT_ID)",
+    )
+    ingest_reddit_parser.add_argument(
+        "--client-secret",
+        help="Reddit application client secret (defaults to REDDIT_CLIENT_SECRET)",
+    )
+    ingest_reddit_parser.add_argument(
+        "--user-agent",
+        help="Reddit application User-Agent (defaults to REDDIT_USER_AGENT)",
+    )
+    ingest_reddit_parser.add_argument(
+        "--token",
+        help="Reddit OAuth access token override (defaults to REDDIT_ACCESS_TOKEN)",
+    )
+    ingest_reddit_parser.add_argument(
+        "--listing",
+        choices=["hot", "new", "top", "rising"],
+        default="hot",
+        help="Subreddit listing type to fetch: hot, new, top, rising (default: hot)",
+    )
+    ingest_reddit_parser.add_argument(
+        "--limit",
+        type=int,
+        help="Maximum posts to fetch per subreddit",
+    )
+    ingest_reddit_parser.add_argument(
+        "--max-comments",
+        type=int,
+        default=50,
+        help="Maximum comments to fetch per post (default: 50)",
+    )
+    ingest_reddit_parser.add_argument(
+        "--no-comments",
+        action="store_true",
+        help="Do not fetch post comments",
+    )
+
     # Command: status
     status_parser = subparsers.add_parser("status", help="Show deduplication tracker status")
     status_parser.add_argument(
@@ -458,7 +543,7 @@ async def async_main(args: argparse.Namespace) -> int:
                 print(f"  ... and {len(records) - 20} more records.")
             return 0
 
-        elif args.command in {"ingest", "ingest-web", "ingest-youtube", "ingest-email", "ingest-rss", "ingest-notion", "ingest-google-keep", "ingest-readwise", "ingest-instapaper", "ingest-github"}:
+        elif args.command in {"ingest", "ingest-web", "ingest-youtube", "ingest-email", "ingest-rss", "ingest-notion", "ingest-google-keep", "ingest-readwise", "ingest-instapaper", "ingest-github", "ingest-reddit"}:
             config.validate()
             pipeline = IngestionPipeline(config=config, tracker=tracker)
             if args.command == "ingest-email":
@@ -479,6 +564,8 @@ async def async_main(args: argparse.Namespace) -> int:
                 source_name = "instapaper"
             elif args.command == "ingest-github":
                 source_name = "github"
+            elif args.command == "ingest-reddit":
+                source_name = "reddit"
             else:
                 source_name = getattr(args, "source", None) or "web"
 
@@ -521,6 +608,20 @@ async def async_main(args: argparse.Namespace) -> int:
                 kwargs["gists_only"] = True
             if getattr(args, "no_comments", False):
                 kwargs["include_comments"] = False
+            if getattr(args, "subreddit", None):
+                kwargs["subreddit"] = args.subreddit
+            if getattr(args, "subreddits", None):
+                kwargs["subreddits"] = args.subreddits
+            if getattr(args, "client_id", None):
+                kwargs["client_id"] = args.client_id
+            if getattr(args, "client_secret", None):
+                kwargs["client_secret"] = args.client_secret
+            if getattr(args, "user_agent", None):
+                kwargs["user_agent"] = args.user_agent
+            if getattr(args, "listing", None):
+                kwargs["listing"] = args.listing
+            if getattr(args, "max_comments", None) is not None:
+                kwargs["max_comments"] = args.max_comments
 
             try:
                 stats = await pipeline.run_source(source_name, **kwargs)
