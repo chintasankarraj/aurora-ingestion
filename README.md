@@ -242,6 +242,16 @@ python main.py ingest-google-keep --path "path/to/Takeout/Keep"
 python main.py ingest-google-keep --path "path/to/Takeout/Keep/Note.json"
 # Or using generic CLI syntax:
 python main.py ingest --source google-keep --path "path/to/Takeout/Keep"
+
+# Ingest highlights and articles from Readwise:
+python main.py ingest-readwise
+# Ingest a specific book/article by Readwise ID:
+python main.py ingest-readwise --book-id "123456"
+# Ingest items updated after a specific date:
+python main.py ingest-readwise --updated-after "2026-01-01"
+# Or using generic CLI syntax:
+python main.py ingest --source readwise
+python main.py ingest --source readwise --book-id "123456"
 ```
 
 ---
@@ -476,6 +486,50 @@ The Google Keep connector enables batch ingestion of notes, lists, checklists, a
 
 ---
 
+## Readwise Source Connector (`sources/readwise_source.py`)
+
+The Readwise connector synchronizes saved books, articles, tweets, and podcasts along with their highlighted passages and personal notes directly from the official Readwise v2 Export API.
+
+### Capabilities:
+- **API Pagination**: Automatically traverses the official Readwise v2 Export API (`https://readwise.io/api/v2/export/`) using cursor-based pagination (`nextPageCursor` and `next` URL fallback) to retrieve all items without truncation.
+- **Granular Filtering**: Supports optional `--book-id` filtering and incremental sync via `--updated-after` ISO 8601 timestamps.
+- **Target Folder**: Writes notes directly to `${AURORA_VAULT_PATH}/Ingested/Web/<YYYY-MM-DD>_readwise_<sanitized-title>.md`.
+- **Comprehensive Frontmatter**:
+  - `title`, `date`, `source: "readwise"`, `tags: [ingested, readwise, ...]`, `ingested_at`, `source_url`, `author`, `readwise_id`, `category`, and `num_highlights`.
+- **Highlights as Blockquotes**:
+  - Highlights are cleanly rendered as standard Markdown `> blockquotes`.
+  - Multi-line highlights have every line properly quoted.
+  - Location and page numbers are preserved inline (e.g. `*Location: page 42*` or `*Location: 105*`).
+- **Inline Personal Notes**:
+  - User notes/memos attached to highlights in Readwise are rendered inline (`**My note:** ...`).
+  - Highlights without notes do not generate redundant or empty note sections.
+- **Document Summaries & Notes**:
+  - Top-level document summaries and document notes are preserved under `## Summary` and `## Document Note`.
+- **Tag Normalization**:
+  - Extracts tags from items and highlights, sanitizes any leading `#` symbols, removes duplicates, and ensures mandatory `ingested` and `readwise` tags.
+- **Deduplication & In-Place Updates**:
+  - `source_id`: `readwise:<user_book_id>` (stable immutable identifier).
+  - `content_hash`: SHA-256 digest of title, body, highlights, locations, and personal notes.
+  - **Unchanged**: Skips re-writing when content is identical.
+  - **Changed**: Overwrites existing note at the exact same path in `${AURORA_VAULT_PATH}/Ingested/Web/` when new highlights or notes are added, without creating duplicate files.
+- **Batch Fault Isolation**:
+  - Malformed API items or individual conversion issues are safely logged and skipped, allowing healthy documents to continue ingestion.
+
+### Setup & Authentication:
+1. Obtain an API token from [Readwise Access Token](https://readwise.io/access_token).
+2. Configure the token in your environment:
+   ```bash
+   export READWISE_TOKEN="readwise_token_here"
+   # Or in .env:
+   # READWISE_TOKEN=readwise_token_here
+   ```
+3. Run ingestion:
+   ```bash
+   python main.py ingest-readwise
+   ```
+
+---
+
 ## Running Tests
 
 Run the complete test suite with `pytest`:
@@ -484,7 +538,7 @@ Run the complete test suite with `pytest`:
 pytest -v
 ```
 
-All 189 unit and integration tests verify:
+All 231 unit and integration tests verify:
 - Vault path expansion and validation
 - Sanitization and 80-character title truncation
 - Frontmatter generation with `ingested` tag enforcement
@@ -597,6 +651,29 @@ All 189 unit and integration tests verify:
 - Google Keep attachment collision resolution and embed synchronization
 - Google Keep missing attachment resilience
 - Google Keep CLI commands (`ingest-google-keep` and `ingest --source google-keep --path`)
+- Readwise connector registration (`readwise`) and CLI source listing
+- Readwise missing token error handling (`SourceError`)
+- Readwise token authentication via `READWISE_TOKEN`, constructor, or CLI `--token`
+- Readwise token secrecy (tokens and authorization headers never written to logs or error messages)
+- Readwise v2 Export API retrieval and cursor-based pagination (`nextPageCursor` and `next` URL)
+- Readwise pagination loop defense against repeated cursors and duplicate or cyclic next URLs
+- Readwise empty response and empty highlights resilience
+- Readwise API error handling (401 unauthorized, 429 rate limit, 500 server error, timeouts, connection errors)
+- Readwise batch fault isolation (individual malformed records skipped without aborting healthy items)
+- Readwise duplicate item deduplication within runs
+- Readwise YAML frontmatter generation (`title`, `date`, `source`, `tags`, `author`, `source_url`, `readwise_id`, `category`, `num_highlights`)
+- Readwise highlights rendered as Markdown `> blockquotes` with multi-line support
+- Readwise highlight location and page number preservation (`*Location: page 42*`)
+- Readwise inline personal notes preservation (`**My note:** ...`)
+- Readwise omission of empty fake notes when personal notes are absent
+- Readwise top-level document summary and document note sections (`## Summary`, `## Document Note`)
+- Readwise tag extraction and normalization (symbol `#` stripped, duplicate-free)
+- Readwise note generation targeted directly under `Ingested/Web/`
+- Readwise filename sanitization, 80-character title truncation, and collision handling (`_2.md`)
+- Readwise deduplication lifecycle (NEW creates note, UNCHANGED skips, CHANGED overwrites in-place at same path)
+- Readwise stable immutable source ID (`user_book_id`, `id`, `book_id`, stable URL fallback, and rejection of records lacking ID or URL to prevent title drift)
+- Readwise edge case handling (missing title fallback, missing author/URL, Unicode emojis/symbols)
+- Readwise CLI commands (`ingest-readwise` with `--book-id` and `--updated-after`, and generic `ingest --source readwise`)
 
 ---
 
@@ -668,11 +745,23 @@ All 189 unit and integration tests verify:
   - [x] Notes saved to `Ingested/Notes/` with YAML frontmatter
   - [x] Stable identity (`google-keep:<id>` / `google-keep:<timestamp>`) & SHA-256 deduplication lifecycle
   - [x] CLI `ingest-google-keep` and `ingest --source google-keep --path` commands
-- [x] 100% test pass rate across all 189 tests.
+- [x] **Readwise Source Connector** (`sources/readwise_source.py`):
+  - [x] Official Readwise v2 Export API integration with cursor-based pagination
+  - [x] Secure authentication via `READWISE_TOKEN` (zero token leaking in logs or exceptions)
+  - [x] Individual item batch fault isolation
+  - [x] Highlights rendered as clean Markdown `> blockquotes` with location/page numbers
+  - [x] Inline personal notes preservation (`**My note:** ...`)
+  - [x] Document summary and document note sections (`## Summary`, `## Document Note`)
+  - [x] Tag normalization and `#` symbol sanitization
+  - [x] Notes saved directly to `Ingested/Web/` with YAML frontmatter and attribution blockquotes
+  - [x] Stable identity (`readwise:<user_book_id>`) & in-place update lifecycle
+  - [x] CLI `ingest-readwise` with `--book-id` and `--updated-after`, and generic `ingest --source readwise`
+- [x] 100% test pass rate across all 231 tests.
 
 ### Next Connectors to Implement:
-1. **Tier 2 Connectors**: Readwise, Pocket, Instapaper.
+1. **Tier 2 Connectors**: Pocket, Instapaper.
 2. **Tier 3 Connectors**: Twitter/X, Reddit, Slack/Discord/Telegram, Audio Whisper transcription, OCR screenshots, GitHub.
+
 
 
 

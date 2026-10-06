@@ -200,6 +200,18 @@ def create_parser() -> argparse.ArgumentParser:
         "--path",
         help="Path to source directory or file (e.g. for Google Keep Takeout)",
     )
+    ingest_parser.add_argument(
+        "--token",
+        help="API token or integration secret (e.g. for Readwise)",
+    )
+    ingest_parser.add_argument(
+        "--book-id",
+        help="Specific book or article ID (e.g. for Readwise)",
+    )
+    ingest_parser.add_argument(
+        "--updated-after",
+        help="Fetch items updated after date (e.g. for Readwise)",
+    )
 
     # Command: ingest-web
     ingest_web_parser = subparsers.add_parser("ingest-web", help="Shortcut to ingest a webpage by URL")
@@ -247,6 +259,24 @@ def create_parser() -> argparse.ArgumentParser:
     ingest_keep_parser.add_argument(
         "--path", "-p",
         help="Path to Google Keep Takeout JSON file or directory (defaults to GOOGLE_KEEP_EXPORT_PATH)",
+    )
+
+    # Command: ingest-readwise
+    ingest_rw_parser = subparsers.add_parser(
+        "ingest-readwise",
+        help="Ingest highlights and articles from Readwise API",
+    )
+    ingest_rw_parser.add_argument(
+        "--token",
+        help="Readwise API token (defaults to READWISE_TOKEN)",
+    )
+    ingest_rw_parser.add_argument(
+        "--book-id",
+        help="Optional specific Readwise book/article ID to ingest",
+    )
+    ingest_rw_parser.add_argument(
+        "--updated-after",
+        help="Optional ISO 8601 date to ingest items updated after (e.g. 2026-01-01)",
     )
 
     # Command: status
@@ -313,7 +343,7 @@ async def async_main(args: argparse.Namespace) -> int:
                 print(f"  ... and {len(records) - 20} more records.")
             return 0
 
-        elif args.command in {"ingest", "ingest-web", "ingest-youtube", "ingest-email", "ingest-rss", "ingest-notion", "ingest-google-keep"}:
+        elif args.command in {"ingest", "ingest-web", "ingest-youtube", "ingest-email", "ingest-rss", "ingest-notion", "ingest-google-keep", "ingest-readwise"}:
             config.validate()
             pipeline = IngestionPipeline(config=config, tracker=tracker)
             if args.command == "ingest-email":
@@ -328,6 +358,8 @@ async def async_main(args: argparse.Namespace) -> int:
                 source_name = "notion"
             elif args.command == "ingest-google-keep":
                 source_name = "google-keep"
+            elif args.command == "ingest-readwise":
+                source_name = "readwise"
             else:
                 source_name = getattr(args, "source", None) or "web"
 
@@ -344,6 +376,12 @@ async def async_main(args: argparse.Namespace) -> int:
                 kwargs["thread_id"] = args.thread_id
             if getattr(args, "page_id", None):
                 kwargs["page_id"] = args.page_id
+            if getattr(args, "token", None):
+                kwargs["token"] = args.token
+            if getattr(args, "book_id", None):
+                kwargs["book_id"] = args.book_id
+            if getattr(args, "updated_after", None):
+                kwargs["updated_after"] = args.updated_after
 
             try:
                 stats = await pipeline.run_source(source_name, **kwargs)

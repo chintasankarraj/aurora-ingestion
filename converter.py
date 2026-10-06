@@ -230,6 +230,26 @@ def build_attribution_block(note: MarkdownNote) -> str:
             meta_parts.append(f"**Updated**: {extract_date_prefix(updated_at)}")
         if meta_parts:
             lines.append(f"> {' · '.join(meta_parts)}")
+    elif note.source == "readwise":
+        readwise_url = note.extra_metadata.get("readwise_url") or ""
+        source_ref = f"[Readwise]({readwise_url})" if readwise_url else "Readwise"
+        lines.append(f"> **Source**: {source_ref}")
+        meta_parts = []
+        if note.author:
+            meta_parts.append(f"**Author**: {note.author}")
+        if note.source_url:
+            meta_parts.append(f"**URL**: [{note.source_url}]({note.source_url})")
+        category = note.extra_metadata.get("category")
+        if category:
+            meta_parts.append(f"**Category**: {category.title()}")
+        original_source = note.extra_metadata.get("original_source")
+        if original_source:
+            meta_parts.append(f"**Original Source**: {original_source}")
+        date_str = extract_date_prefix(note.date)
+        if date_str:
+            meta_parts.append(f"**Date**: {date_str}")
+        if meta_parts:
+            lines.append(f"> {' · '.join(meta_parts)}")
     else:
         # Generic attribution block
         meta_parts = [f"**Source**: {source_ref}"]
