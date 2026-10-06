@@ -217,6 +217,19 @@ def build_attribution_block(note: MarkdownNote) -> str:
                 meta_parts.append(f"**Date**: {date_str}")
         if meta_parts:
             lines.append(f"> {' · '.join(meta_parts)}")
+    elif note.source == "google-keep":
+        source_url = note.source_url or ""
+        source_ref = f"[Google Keep]({source_url})" if source_url else "Google Keep"
+        lines.append(f"> **Source**: {source_ref}")
+        meta_parts = []
+        created_at = note.extra_metadata.get("created_at")
+        updated_at = note.extra_metadata.get("updated_at")
+        if created_at:
+            meta_parts.append(f"**Created**: {extract_date_prefix(created_at)}")
+        if updated_at:
+            meta_parts.append(f"**Updated**: {extract_date_prefix(updated_at)}")
+        if meta_parts:
+            lines.append(f"> {' · '.join(meta_parts)}")
     else:
         # Generic attribution block
         meta_parts = [f"**Source**: {source_ref}"]

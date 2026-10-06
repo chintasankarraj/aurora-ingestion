@@ -235,6 +235,13 @@ python main.py ingest-notion --page-id "PAGE_ID"
 # Or using generic CLI syntax:
 python main.py ingest --source notion
 python main.py ingest --source notion --page-id "PAGE_ID"
+
+# Ingest Google Keep notes from Google Takeout export directory:
+python main.py ingest-google-keep --path "path/to/Takeout/Keep"
+# Ingest a single Google Keep JSON file:
+python main.py ingest-google-keep --path "path/to/Takeout/Keep/Note.json"
+# Or using generic CLI syntax:
+python main.py ingest --source google-keep --path "path/to/Takeout/Keep"
 ```
 
 ---
@@ -412,6 +419,63 @@ The Notion connector ingests pages and database records accessible to a Notion i
 
 ---
 
+## Google Keep Source Connector (`sources/keep_source.py`)
+
+The Google Keep connector enables batch ingestion of notes, lists, checklists, and attachments from Google Takeout Keep JSON archives.
+
+### Capabilities:
+- **Input Flexibility**: Accepts a directory containing Google Takeout Keep `.json` export files or a direct path to a single `.json` file.
+- **Deterministic Processing**: Discovers `.json` files in deterministic, case-insensitive filename order and filters out unrelated files.
+- **Target Folder**: Writes notes directly to `${AURORA_VAULT_PATH}/Ingested/Notes/<YYYY-MM-DD>_google-keep_<title>.md`.
+- **Timestamp Fidelity**: Parses Google Keep microsecond timestamps (`createdTimestampUsec` and `userEditedTimestampUsec`) into ISO 8601 strings and note dates (`YYYY-MM-DD`), with graceful fallback to file system timestamps.
+- **Rich Checklists & Lists**:
+  - Converts `listContent` checklist items into standard Markdown `- [ ]` (unchecked) and `- [x]` (checked) tasks.
+  - Automatically deduplicates matching lines between `textContent` and `listContent` to prevent repeating checklist text in the note body.
+- **Labels & Tags**:
+  - Extracts labels from the `labels` array, sanitizes any leading `#` symbols, and maps them to frontmatter `tags`.
+  - Enforces mandatory `ingested` tag along with `google-keep`.
+- **Color Metadata Preservation**:
+  - Preserves Google Keep card color names (e.g. `RED`, `BLUE`, `YELLOW`) in frontmatter as `keep_color`.
+  - Appends a `keep-<color>` tag (e.g. `keep-red`, `keep-blue`) for visual filtering and styling in Obsidian.
+- **Archived & Trashed State Tracking**:
+  - Notes marked `isArchived: true` receive frontmatter `archived: true` and `status: "archived"`.
+  - Notes marked `isTrashed: true` receive frontmatter `trashed: true` and `status: "trashed"`.
+- **Local Attachment Copying**:
+  - Discovers image and file attachments referenced in the Takeout JSON (`attachments[].filePath`) relative to the export directory.
+  - Copies attachments into `${AURORA_VAULT_PATH}/Attachments/Ingested/`.
+  - Handles filename collisions (`diagram.png`, `diagram_2.png`) across notes and updates embed tags accordingly.
+  - Embeds attachments into the Markdown note using `![[filename.ext]]`.
+  - Tolerates missing or unexported attachment files by logging warnings without aborting note processing.
+- **Deduplication & In-Place Updates**:
+  - Derives stable source ID: `google-keep:<id>` (from note ID) or `google-keep:<createdTimestampUsec>` (immutable timestamp), falling back to filename stem.
+  - `content_hash`: SHA-256 of title, body, and attachment contents.
+  - **Unchanged**: Skips re-processing if content hash matches existing record.
+  - **Changed**: Overwrites note in-place in `${AURORA_VAULT_PATH}/Ingested/Notes/` and updates tracking records without creating duplicate notes.
+- **Batch Isolation**: Corrupt or malformed JSON files are logged with `SourceError` while allowing all healthy notes in the batch to complete successfully.
+
+### Setup & Export Workflow:
+1. Visit [Google Takeout](https://takeout.google.com/).
+2. Deselect all services and check **Google Keep**.
+3. Export and download the `.zip` archive.
+4. Extract the archive (usually extracts to a folder named `Takeout/Keep`).
+5. Configure the export path in `.env` or via CLI:
+   ```bash
+   export GOOGLE_KEEP_EXPORT_PATH="/path/to/Takeout/Keep"
+   # Or in .env:
+   # GOOGLE_KEEP_EXPORT_PATH=C:\path\to\Takeout\Keep
+   ```
+6. Run ingestion:
+   ```bash
+   python main.py ingest-google-keep
+   ```
+
+### Known Limitations:
+- **Takeout Export Required**: Ingestion is based on Google Takeout JSON exports; real-time Keep sync via the private/unofficial Google Keep API (`gkeepapi`) is not supported in this version.
+- **Audio Recordings**: Audio attachments in Takeout are preserved as file attachments but not automatically transcribed into text (handled in Tier 3 Whisper integration).
+- **Drawings & Ink**: Google Keep drawing notes are exported by Google as `.png` images and embedded as image attachments.
+
+---
+
 ## Running Tests
 
 Run the complete test suite with `pytest`:
@@ -420,7 +484,7 @@ Run the complete test suite with `pytest`:
 pytest -v
 ```
 
-All 152 unit and integration tests verify:
+All 189 unit and integration tests verify:
 - Vault path expansion and validation
 - Sanitization and 80-character title truncation
 - Frontmatter generation with `ingested` tag enforcement
@@ -512,6 +576,27 @@ All 152 unit and integration tests verify:
 - Notion batch isolation preventing single-page failure from aborting search batch
 - Notion API error, 401 auth, 403 permissions, 404 not found, and 429 rate limit mapping to SourceError
 - Notion CLI commands (`ingest-notion` with `--page-id` and generic `ingest --source notion`)
+- Google Keep connector registration (`google-keep`) and CLI source listing
+- Google Keep missing and invalid export path error handling (`SourceError`)
+- Google Keep single JSON file and directory ingestion
+- Google Keep deterministic file discovery order
+- Google Keep malformed JSON isolation without aborting batch
+- Google Keep title extraction and fallback logic
+- Google Keep plain text paragraph structure preservation
+- Google Keep microsecond timestamp conversion (`createdTimestampUsec`, `userEditedTimestampUsec`)
+- Google Keep checklist conversion to Markdown `- [ ]` and `- [x]` tasks
+- Google Keep plain text and checklist deduplication
+- Google Keep labels extraction, `#` sanitization, and frontmatter tags mapping
+- Google Keep note color preservation and `keep-*` tags
+- Google Keep archived and trashed state tracking
+- Google Keep stable source identity derivation (`google-keep:<id>`)
+- Google Keep note generation under `Ingested/Notes/`
+- Google Keep deduplication and in-place update lifecycle
+- Google Keep filename collision disambiguation
+- Google Keep local attachment copying to `Attachments/Ingested/` and Obsidian embeds
+- Google Keep attachment collision resolution and embed synchronization
+- Google Keep missing attachment resilience
+- Google Keep CLI commands (`ingest-google-keep` and `ingest --source google-keep --path`)
 
 ---
 
@@ -571,10 +656,23 @@ All 152 unit and integration tests verify:
   - [x] Stable identity (`notion:<page_id>`) & in-place update lifecycle
   - [x] Batch processing with individual page error isolation
   - [x] CLI `ingest-notion` and `ingest --source notion` commands
-- [x] 100% test pass rate across all 152 tests.
+- [x] **Google Keep Source Connector** (`sources/keep_source.py`):
+  - [x] Google Takeout JSON directory and single file discovery
+  - [x] Deterministic processing order and malformed JSON fault isolation
+  - [x] Title extraction and microsecond timestamp parsing
+  - [x] Checklist conversion (`- [ ]` / `- [x]`) and text-checklist deduplication
+  - [x] Labels to tags mapping with `#` symbol sanitization
+  - [x] Color metadata preservation (`keep_color` and `keep-<color>` tags)
+  - [x] Archived and trashed state tracking
+  - [x] Local attachment copying to `Attachments/Ingested/` with collision handling and Obsidian embeds
+  - [x] Notes saved to `Ingested/Notes/` with YAML frontmatter
+  - [x] Stable identity (`google-keep:<id>` / `google-keep:<timestamp>`) & SHA-256 deduplication lifecycle
+  - [x] CLI `ingest-google-keep` and `ingest --source google-keep --path` commands
+- [x] 100% test pass rate across all 189 tests.
 
 ### Next Connectors to Implement:
-1. **Tier 2 Connectors**: Google Keep, Readwise, Pocket, Instapaper.
+1. **Tier 2 Connectors**: Readwise, Pocket, Instapaper.
 2. **Tier 3 Connectors**: Twitter/X, Reddit, Slack/Discord/Telegram, Audio Whisper transcription, OCR screenshots, GitHub.
+
 
 

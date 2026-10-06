@@ -2,6 +2,7 @@
 
 from sources.base import BaseSource, SourceRegistry, async_retry
 from sources.email_source import EmailSource
+from sources.keep_source import KeepSource
 from sources.notion_source import NotionSource
 from sources.pdf_source import PDFSource
 from sources.rss_source import RSSSource
@@ -18,4 +19,6 @@ __all__ = [
     "EmailSource",
     "RSSSource",
     "NotionSource",
+    "KeepSource",
 ]
+

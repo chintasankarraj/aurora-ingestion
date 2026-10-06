@@ -196,6 +196,10 @@ def create_parser() -> argparse.ArgumentParser:
         "--page-id",
         help="Specific Notion page ID to ingest",
     )
+    ingest_parser.add_argument(
+        "--path",
+        help="Path to source directory or file (e.g. for Google Keep Takeout)",
+    )
 
     # Command: ingest-web
     ingest_web_parser = subparsers.add_parser("ingest-web", help="Shortcut to ingest a webpage by URL")
@@ -233,6 +237,16 @@ def create_parser() -> argparse.ArgumentParser:
     ingest_notion_parser.add_argument(
         "--page-id",
         help="Optional specific Notion page ID to ingest (defaults to all accessible pages)",
+    )
+
+    # Command: ingest-google-keep
+    ingest_keep_parser = subparsers.add_parser(
+        "ingest-google-keep",
+        help="Ingest Google Keep notes from Google Takeout export",
+    )
+    ingest_keep_parser.add_argument(
+        "--path", "-p",
+        help="Path to Google Keep Takeout JSON file or directory (defaults to GOOGLE_KEEP_EXPORT_PATH)",
     )
 
     # Command: status
@@ -299,7 +313,7 @@ async def async_main(args: argparse.Namespace) -> int:
                 print(f"  ... and {len(records) - 20} more records.")
             return 0
 
-        elif args.command in {"ingest", "ingest-web", "ingest-youtube", "ingest-email", "ingest-rss", "ingest-notion"}:
+        elif args.command in {"ingest", "ingest-web", "ingest-youtube", "ingest-email", "ingest-rss", "ingest-notion", "ingest-google-keep"}:
             config.validate()
             pipeline = IngestionPipeline(config=config, tracker=tracker)
             if args.command == "ingest-email":
@@ -312,6 +326,8 @@ async def async_main(args: argparse.Namespace) -> int:
                 source_name = "rss"
             elif args.command == "ingest-notion":
                 source_name = "notion"
+            elif args.command == "ingest-google-keep":
+                source_name = "google-keep"
             else:
                 source_name = getattr(args, "source", None) or "web"
 
@@ -320,6 +336,8 @@ async def async_main(args: argparse.Namespace) -> int:
                 kwargs["url"] = args.url
             if getattr(args, "file", None):
                 kwargs["file"] = args.file
+            if getattr(args, "path", None):
+                kwargs["path"] = args.path
             if getattr(args, "provider", None):
                 kwargs["provider"] = args.provider
             if getattr(args, "thread_id", None):
